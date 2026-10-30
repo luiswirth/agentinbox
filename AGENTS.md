@@ -11,7 +11,7 @@ one of the small projects Hivemind's ideas go on in (polylogue-project's `direct
 - All senses can be made into hooks, Luis's realization: a harness runs a sense from a hook and passes its output into the context.
 - senses is a standard of its own, as minimal and universal as skills, Luis's decision.
 - senses.sh, Luis's domain, is only for the senses standard, Luis's decision.
-  polylogue's relay and web clients moved off it, to `agentic.lwirth.com`.
+  polylogue's relay and web clients moved off it, to `agentics.lwirth.com`.
 
 ## Open
 
