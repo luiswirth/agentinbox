@@ -10,8 +10,8 @@ one of the small projects Hivemind's ideas go on in (byoa-project's `direction.m
   In Luis's words: "a small program/exectuable that produces some text (or any other modality maybe) that gets injected into the context of an agent. super simple."
 - All senses can be made into hooks, Luis's realization: a harness runs a sense from a hook and passes its output into the context.
 - senses is a standard of its own, as minimal and universal as skills, Luis's decision.
-- senses.sh, Luis's domain, is a candidate home for the standard, Luis's idea.
-  Today it hosts byoa's web clients and relay on subdomains.
+- senses.sh, Luis's domain, is only for the senses standard, Luis's decision.
+  byoa's relay and web clients moved off it, to `agentic.lwirth.com`.
 
 ## Open
 
