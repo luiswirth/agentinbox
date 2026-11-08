@@ -15,6 +15,7 @@ one of the small projects Hivemind's ideas go on in (vibetogether-project's `dir
 
 ## Open
 
+- Whether senses covers sensing other agents and people, such as their status, Luis (2026-11-08): "status is a sense. i don't know how this will manifest. but we should sense the status of other agents/people. but it's unclear if the thing we want to build, which we currently call senses should support that or related to that."
 - When a sense runs: at every step, at the start of a context, or as the sense itself declares.
   Each harness lets a hook add context only at some of its events.
   Hint: the first sense in use, the clock of dothome (`home/claude-clock.sh`), runs only when the user sends a message,
