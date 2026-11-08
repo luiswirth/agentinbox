@@ -2,7 +2,7 @@
 
 An open standard for adding to an agent's context programmatically, harness-agnostic, as Agent Skills is for knowledge.
 It is the senses of Hivemind (`~/dev/hivemind`, its design's "Senses") made into a piece of their own,
-one of the small projects Hivemind's ideas go on in (vibe-together-project's `direction.md`).
+one of the small projects Hivemind's ideas go on in (vibetogether-project's `direction.md`).
 
 ## Decided
 
