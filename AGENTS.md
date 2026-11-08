@@ -2,7 +2,7 @@
 
 An open standard for adding to an agent's context programmatically, harness-agnostic, as Agent Skills is for knowledge.
 It is the senses of Hivemind (`~/dev/hivemind`, its design's "Senses") made into a piece of their own,
-one of the small projects Hivemind's ideas go on in (polylogue-project's `direction.md`).
+one of the small projects Hivemind's ideas go on in (vibe-together-project's `direction.md`).
 
 ## Decided
 
@@ -11,7 +11,7 @@ one of the small projects Hivemind's ideas go on in (polylogue-project's `direct
 - All senses can be made into hooks, Luis's realization: a harness runs a sense from a hook and passes its output into the context.
 - senses is a standard of its own, as minimal and universal as skills, Luis's decision.
 - senses.sh, Luis's domain, is only for the senses standard, Luis's decision.
-  polylogue's relay and web clients moved off it, to `agentics.lwirth.com`.
+  Vibe Together's relay and web clients moved off it, to `agentics.lwirth.com`.
 
 ## Open
 
