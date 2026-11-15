@@ -30,9 +30,13 @@ The concepts behind it are in `~/Documents/understanding/agents/glossary.md`, un
 - One file per item, Luis's decision (2026-11-15).
   Many writers deliver at once with no lock, the file is the content of any type, such as an image, and taking it in is a move.
 
+- Waking is a doorbell of its own, apart from delivering, Luis's decision (2026-11-15):
+  dropping a file is always quiet, and a sender that wants to wake the agent also creates the file `wake` beside the item folders.
+  A file, since only a file keeps a ring while no one watches, and anything rings it with `touch`.
+  An agent's inbox is `new/` (not yet seen), `cur/` (seen), `tmp/` (being written) and `wake`.
+
 ## Open
 
-- How a file marks that it wakes.
 - How a hook knows its agent.
 - How each harness takes in at each step, such as Claude Code, Codex and pi:
   Each lets a hook add context only at some of its events.
