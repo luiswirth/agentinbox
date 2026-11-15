@@ -20,7 +20,12 @@ one of the small projects Hivemind's ideas go on in (vibetogether-project's `dir
   What it cannot enforce becomes a how-to on senses.sh, such as "inform, never instruct".
 - A project can declare what is always loaded, Luis's decision (2026-11-14), such as `FRAMING.md` in maxwellgp-paper.
 
+- Each agent has an inbox, Luis's decision (2026-11-15): "i like the inbox per agent."
+  Proposal behind it: one primitive, a perception, content and whether it wakes; anything delivers one by writing into the agent's inbox, a directory on the machine where the agent runs, and the harness takes it in at each step and waits on it to wake.
+
 ## Open
+
+- Whether the piece covers all three ways in (always, pulled, pushed) as one interface, or only push and waking, which harnesses lack (Luis, 2026-11-15).
 
 - Whether senses covers sensing other agents and people, such as their status, Luis (2026-11-08): "status is a sense. i don't know how this will manifest. but we should sense the status of other agents/people. but it's unclear if the thing we want to build, which we currently call senses should support that or related to that."
 - When a sense runs: at every step, at the start of a context, or as the sense itself declares.
