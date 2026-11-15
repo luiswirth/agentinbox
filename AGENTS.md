@@ -35,9 +35,14 @@ The concepts behind it are in `~/Documents/understanding/agents/glossary.md`, un
   A file, since only a file keeps a ring while no one watches, and anything rings it with `touch`.
   An agent's inbox is `new/` (not yet seen), `cur/` (seen), `tmp/` (being written) and `wake`.
 
+- An agent's inbox is `~/.agents/inbox/<agent>/` by default, and whoever starts an agent sets `AGENT_INBOX` to it, decided by an agent at Luis's request (2026-11-15):
+  a variable is how a process tree knows its own, as `HOME` is; the agent's shell inherits it, so the agent knows its inbox too; and a path, not a name, is all the inbox needs, so a setup may put it anywhere.
+  Without it, nothing is taken in.
+
 ## Open
 
-- How a hook knows its agent.
+- An interactive session no one started with `AGENT_INBOX`, such as a plain Claude Code window.
+
 - How each harness takes in at each step, such as Claude Code, Codex and pi:
   Each lets a hook add context only at some of its events.
 - Whether perceiving other agents and people, such as their status, belongs here, Luis (2026-11-08): "status is a sense. i don't know how this will manifest. but we should sense the status of other agents/people. but it's unclear if the thing we want to build, which we currently call senses should support that or related to that."
