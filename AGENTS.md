@@ -35,6 +35,10 @@ The concepts behind it are in `~/Documents/understanding/agents/glossary.md`, un
   A file, since only a file keeps a ring while no one watches, and anything rings it with `touch`.
   An agent's inbox is `new/` (not yet seen), `cur/` (seen), `tmp/` (being written) and `wake`.
 
+- An agent is awake while its harness holds a lock on the file `awake` beside `wake`, for as long as a turn runs, Luis's decision (2026-11-15).
+  State is held, never declared: the system releases the lock when the turn ends or the harness dies, as a destructor runs when a value leaves its scope, so it never goes stale.
+  Anything that wants to know, such as a bridge to Vibe Together, looks at whether the lock is held.
+
 - An agent's inbox is `~/.agents/inbox/<agent>/` by default, and whoever starts an agent sets `AGENT_INBOX` to it, decided by an agent at Luis's request (2026-11-15):
   a variable is how a process tree knows its own, as `HOME` is; the agent's shell inherits it, so the agent knows its inbox too; and a path, not a name, is all the inbox needs, so a setup may put it anywhere.
   Without it, nothing is taken in.
