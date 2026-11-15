@@ -39,12 +39,37 @@ The concepts behind it are in `~/Documents/understanding/agents/glossary.md`, un
   a variable is how a process tree knows its own, as `HOME` is; the agent's shell inherits it, so the agent knows its inbox too; and a path, not a name, is all the inbox needs, so a setup may put it anywhere.
   Without it, nothing is taken in.
 
+## Built
+
+- The command line `agentinbox` (`src/`), one Rust crate, whose `--help` documents it:
+  `deliver`, `ring`, `take` and `wait`, all acting on `$AGENT_INBOX` or `--inbox`.
+  - An item is named `<time>.<sender>.<ext>`, such as `20261115T153012.123456Z.luis.md`, the time in UTC, so names sort by time.
+  - Delivering writes into `tmp/` and hard-links into `new/`, so `new/` holds only whole items and no delivery overwrites another.
+  - Taking moves each item to `cur/` before reading it, so of concurrent takers exactly one gets it.
+  - `take` prints each item as `<inbox-item from=".." time="..">` with its text, or, if it is not UTF-8, as its path and type.
+  - `wait` uses filesystem notifications, never polling.
+- Each harness is wired by what is in `harnesses/<harness>/`, so far:
+  - Claude Code: `settings.json` holds the hooks that take in on each prompt and after each tool call.
+    A running agent wakes by running `agentinbox wait && agentinbox take` as a background command,
+    whose completion wakes it with what is new, and then runs it again.
+  - pi: the extension `agentinbox.ts` takes in at each step and keeps a `wait` running, which steers what is new into a busy agent and starts a turn in an idle one.
+
 ## Open
 
 - An interactive session no one started with `AGENT_INBOX`, such as a plain Claude Code window.
 
 - How each harness takes in at each step, such as Claude Code, Codex and pi:
   Each lets a hook add context only at some of its events.
+- Claude Code hooks of `harnesses/claude-code` are ignored on Luis's machines,
+  since the managed settings allow only managed hooks: wiring them in goes through `dothome`.
+- Claude Code may wake an idle agent without its help:
+  a hook with `asyncRewake` wakes the model when it exits with 2, so a `Stop` hook could run `wait` and `take`.
+  Untested.
+- What a ring with nothing new should say to an agent:
+  The pi extension wakes it with a fixed line.
+- A `wait` outlives a harness that is killed with SIGKILL, and then silences the bell for the next agent.
+- Whether sender names need more than `[A-Za-z0-9_-]`, which is all a name keeps.
+
 - Whether perceiving other agents and people, such as their status, belongs here, Luis (2026-11-08): "status is a sense. i don't know how this will manifest. but we should sense the status of other agents/people. but it's unclear if the thing we want to build, which we currently call senses should support that or related to that."
 
 ## Related work
