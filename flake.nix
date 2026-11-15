@@ -50,6 +50,8 @@
         src = craneLib.cleanCargoSource ./.;
         pname = "agentinbox";
         version = "0";
+        # Both binaries: `agentinbox` and the bridge `agentinbox-vibetogether`.
+        cargoExtraArgs = "--locked --workspace";
       };
     in {
       default = craneLib.buildPackage (common // {cargoArtifacts = craneLib.buildDepsOnly common;});

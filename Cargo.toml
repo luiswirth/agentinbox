@@ -9,3 +9,6 @@ jiff = "0.2.45"
 mime2ext = "0.1.54"
 mime_guess = "2.0.5"
 notify = "8.2.2"
+
+[workspace]
+members = ["bridges/vibetogether"]

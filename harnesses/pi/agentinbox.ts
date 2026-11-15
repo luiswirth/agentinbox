@@ -1,4 +1,5 @@
-// Takes in the agent's inbox at each step and wakes the agent when the bell rings.
+// Takes in the agent's inbox at each step, wakes the agent when the bell rings,
+// and holds the awake lock while a run lasts.
 // Does nothing unless AGENT_INBOX is set.
 
 import { type ChildProcess, spawn } from "node:child_process";
@@ -51,9 +52,35 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	// The agent is awake from the start of a run until it has settled, retries and continuations included.
+	// The lock lives in a child that holds it until its stdin closes, so it goes when pi dies too.
+	let awake: ChildProcess | undefined;
+
+	pi.on("agent_start", () => {
+		if (stopped || awake) return;
+		const holder = spawn("agentinbox", ["awake"], {
+			stdio: ["pipe", "ignore", "ignore"],
+		});
+		const gone = () => {
+			if (awake === holder) awake = undefined;
+		};
+		holder.on("exit", gone);
+		holder.on("error", gone);
+		holder.stdin?.on("error", gone);
+		awake = holder;
+	});
+
+	function sleep() {
+		awake?.stdin?.end();
+		awake = undefined;
+	}
+
+	pi.on("agent_settled", sleep);
+
 	function stop() {
 		stopped = true;
 		waiter?.kill();
+		sleep();
 	}
 
 	pi.on("session_start", () => wait());

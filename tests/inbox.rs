@@ -203,3 +203,44 @@ fn delivering_without_ringing_does_not_wake() {
   inbox.deliver(&b"quiet"[..], "tester", "txt").unwrap();
   assert!(!inbox.wake_file().exists());
 }
+
+/// `agentinbox awake` holds the lock across processes for as long as its stdin is open,
+/// and the system releases it when the pipe closes, also when the holder is killed.
+#[test]
+fn awake_is_held_while_stdin_is_open() {
+  use std::process::{Command, Stdio};
+
+  let inbox = inbox("awake");
+  assert!(!inbox.awake().unwrap());
+  let hold = || {
+    Command::new(env!("CARGO_BIN_EXE_agentinbox"))
+      .args(["--inbox".as_ref(), inbox.root.as_os_str(), "awake".as_ref()])
+      .stdin(Stdio::piped())
+      .spawn()
+      .unwrap()
+  };
+  let until = |awake: bool| {
+    let start = Instant::now();
+    while inbox.awake().unwrap() != awake {
+      assert!(start.elapsed() < Duration::from_secs(5), "never {awake}");
+      thread::sleep(Duration::from_millis(10));
+    }
+  };
+
+  let mut holder = hold();
+  until(true);
+  drop(holder.stdin.take());
+  assert!(holder.wait().unwrap().success());
+  until(false);
+
+  let mut holder = hold();
+  until(true);
+  holder.kill().unwrap();
+  holder.wait().unwrap();
+  until(false);
+
+  let lock = inbox.hold_awake().unwrap();
+  assert!(inbox.awake().unwrap());
+  drop(lock);
+  assert!(!inbox.awake().unwrap());
+}

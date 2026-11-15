@@ -10,8 +10,8 @@ use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 /// An agent's inbox: anything delivers content to an agent, and the agent's harness takes it in.
 ///
 /// The inbox is a directory, created on first use: `new/` holds the items not yet taken in, `cur/` the taken ones,
-/// `tmp/` the ones being written, and the file `wake` is the doorbell. Each item is one file, named
-/// `<time>.<sender>.<ext>`, with the time in UTC. Delivering is quiet: the agent sees the item at its next step.
+/// `tmp/` the ones being written, the file `wake` is the doorbell, and the agent is awake while a lock on the file
+/// `awake` is held. Each item is one file, named `<time>.<sender>.<ext>`, with the time in UTC. Delivering is quiet: the agent sees the item at its next step.
 /// Ringing the bell also wakes an agent that is idle.
 ///
 /// Anything can also deliver without this command, by writing a file into `tmp/` and renaming it into `new/`,
@@ -56,6 +56,11 @@ enum Command {
   /// Wakes the agent: run it as a background command, or from a watcher that starts the agent.
   /// It does not take anything in; run `take` after it.
   Wait,
+  /// Hold the awake lock until stdin closes: the agent is awake meanwhile, such as while a turn runs.
+  ///
+  /// A harness starts it with a pipe at the start of a turn and closes the pipe at its end.
+  /// If the harness dies, the pipe closes and the lock goes with it. Waits while another holds the lock.
+  Awake,
 }
 
 fn main() -> ExitCode {
@@ -105,6 +110,10 @@ fn run(inbox: &Inbox, command: Command) -> io::Result<()> {
       }
     }
     Command::Wait => inbox.wait()?,
+    Command::Awake => {
+      let _lock = inbox.hold_awake()?;
+      io::copy(&mut io::stdin().lock(), &mut io::sink())?;
+    }
   }
   Ok(())
 }

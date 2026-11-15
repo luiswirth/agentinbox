@@ -45,18 +45,24 @@ The concepts behind it are in `~/Documents/understanding/agents/glossary.md`, un
 
 ## Built
 
-- The command line `agentinbox` (`src/`), one Rust crate, whose `--help` documents it:
-  `deliver`, `ring`, `take` and `wait`, all acting on `$AGENT_INBOX` or `--inbox`.
+- The command line `agentinbox` (`src/`), whose `--help` documents it:
+  `deliver`, `ring`, `take`, `wait` and `awake`, all acting on `$AGENT_INBOX` or `--inbox`.
   - An item is named `<time>.<sender>.<ext>`, such as `20261115T153012.123456Z.luis.md`, the time in UTC, so names sort by time.
   - Delivering writes into `tmp/` and hard-links into `new/`, so `new/` holds only whole items and no delivery overwrites another.
   - Taking moves each item to `cur/` before reading it, so of concurrent takers exactly one gets it.
   - `take` prints each item as `<inbox-item from=".." time="..">` with its text, or, if it is not UTF-8, as its path and type.
   - `wait` uses filesystem notifications, never polling.
+  - `awake` holds the lock on `awake` until its stdin closes, so it goes when the harness dies.
+- The bridge `agentinbox-vibetogether` (`bridges/vibetogether/`), whose `--help` documents it:
+  it keeps one receive of the agent open, with `state` from the awake lock, delivers each item into the inbox, rings for a ping or a session's message, and acknowledges an item once it has left `new/`.
+  - Each item's first line, `Vibe Together item <n> (<reach>), session <name> (<id>):`, says where it is from, and after a restart the bridge recognises its items still in `new/` by it.
+  - The repository is a Cargo workspace, and the flake's package holds both binaries.
 - Each harness is wired by what is in `harnesses/<harness>/`, so far:
   - Claude Code: `settings.json` holds the hooks that take in on each prompt and after each tool call.
     A running agent wakes by running `agentinbox wait && agentinbox take` as a background command,
     whose completion wakes it with what is new, and then runs it again.
   - pi: the extension `agentinbox.ts` takes in at each step and keeps a `wait` running, which steers what is new into a busy agent and starts a turn in an idle one.
+    It holds `agentinbox awake` from `agent_start` until `agent_settled`.
 
 ## Open
 
@@ -69,6 +75,14 @@ The concepts behind it are in `~/Documents/understanding/agents/glossary.md`, un
 - Claude Code may wake an idle agent without its help:
   a hook with `asyncRewake` wakes the model when it exits with 2, so a `Stop` hook could run `wait` and `take`.
   Untested.
+- Claude Code holds no awake lock: its hooks are short-lived processes, and none lasts a turn.
+
+- Vibe Together's receive answers at once while unacknowledged items are left, so no receive can wait while an item sits untaken in `new/`:
+  the bridge then receives every 10 seconds, which delays new items by as much.
+  A receive that names what it already has, apart from what it acknowledges, would end it.
+- An item taken in but not yet acknowledged when the bridge dies comes again after a restart, as a duplicate:
+  the bridge recognises only what is still in `new/`.
+
 - What a ring with nothing new should say to an agent:
   The pi extension wakes it with a fixed line.
 - A `wait` outlives a harness that is killed with SIGKILL, and then silences the bell for the next agent.

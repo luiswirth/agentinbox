@@ -7,6 +7,6 @@ export RUSTDOCFLAGS := "-D warnings"
 ci:
     nix fmt -- --ci
     nix flake check
-    cargo clippy --all-targets
-    cargo test
-    cargo doc --no-deps
+    cargo clippy --workspace --all-targets
+    cargo test --workspace
+    cargo doc --workspace --no-deps

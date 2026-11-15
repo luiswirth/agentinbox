@@ -1,6 +1,6 @@
 //! An agent's inbox, a directory like a maildir:
 //! `new/` holds the items not yet taken in, `cur/` the taken ones, `tmp/` the ones being written,
-//! and the file `wake` is the doorbell.
+//! the file `wake` is the doorbell, and a lock on the file `awake` says the agent is in a turn.
 //!
 //! An item is one file, named `<time>.<sender>.<ext>`, such as `20261115T153012.123456Z.luis.md`,
 //! with the time in UTC to the microsecond, so that the names sort by time.
@@ -59,8 +59,12 @@ impl Inbox {
   pub fn wake_file(&self) -> PathBuf {
     self.root.join("wake")
   }
+  pub fn awake_file(&self) -> PathBuf {
+    self.root.join("awake")
+  }
 
-  fn create(&self) -> io::Result<()> {
+  /// Creates the inbox's directories where they are missing.
+  pub fn create(&self) -> io::Result<()> {
     for dir in [self.new_dir(), self.cur_dir(), self.tmp_dir()] {
       fs::create_dir_all(&dir).map_err(|e| at(e, &dir))?;
     }
@@ -148,6 +152,37 @@ impl Inbox {
       items.push(read_item(path)?);
     }
     Ok(items)
+  }
+
+  /// Takes the exclusive lock on `awake`, waiting while another holds it:
+  /// the agent is awake until the returned file is dropped or the process ends,
+  /// and then the system releases the lock, so it never goes stale.
+  pub fn hold_awake(&self) -> io::Result<fs::File> {
+    self.create()?;
+    let path = self.awake_file();
+    let file = fs::OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(&path)
+      .map_err(|e| at(e, &path))?;
+    file.lock().map_err(|e| at(e, &path))?;
+    Ok(file)
+  }
+
+  /// Whether the agent is awake: whether any open file holds the lock on `awake`, in this process or another.
+  /// It tests by taking the lock for a moment, during which a `hold_awake` waits.
+  pub fn awake(&self) -> io::Result<bool> {
+    let path = self.awake_file();
+    let file = match fs::File::open(&path) {
+      Ok(file) => file,
+      Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+      Err(e) => return Err(at(e, &path)),
+    };
+    match file.try_lock() {
+      Ok(()) => Ok(false),
+      Err(fs::TryLockError::WouldBlock) => Ok(true),
+      Err(fs::TryLockError::Error(e)) => Err(at(e, &path)),
+    }
   }
 
   /// Blocks until the bell rings, then removes `wake`.
