@@ -1,4 +1,4 @@
-# inbox
+# agentinbox
 
 An inbox per agent: anything delivers content to an agent by writing a file into it, and the agent's harness takes it in, harness-agnostic.
 It goes on from Hivemind's senses (`~/dev/hivemind`, its design's "Senses"),
