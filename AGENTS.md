@@ -27,14 +27,15 @@ The concepts behind it are in `~/Documents/understanding/agents/glossary.md`, un
 - inbox implements Luis's convictions on context management, Luis's decision (2026-11-14).
   What it cannot enforce becomes a how-to, such as "inform, never instruct".
 
+- One file per item, Luis's decision (2026-11-15).
+  Many writers deliver at once with no lock, the file is the content of any type, such as an image, and taking it in is a move.
+
 ## Open
 
-- The format of a file in the inbox.
 - How a file marks that it wakes.
 - How a hook knows its agent.
 - How each harness takes in at each step, such as Claude Code, Codex and pi:
   Each lets a hook add context only at some of its events.
-- Modalities other than text, such as images.
 - Whether perceiving other agents and people, such as their status, belongs here, Luis (2026-11-08): "status is a sense. i don't know how this will manifest. but we should sense the status of other agents/people. but it's unclear if the thing we want to build, which we currently call senses should support that or related to that."
 
 ## Related work
