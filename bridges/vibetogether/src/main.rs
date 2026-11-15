@@ -13,8 +13,8 @@ use crate::{bridge::Bridge, receive::Client};
 /// It keeps one receive of the agent open always, so the agent is present: `awake` while the inbox's awake lock is held,
 /// `asleep` otherwise. Each item that reaches the agent is delivered into the inbox as text whose first line says where
 /// it is from; a ping or a session's message also rings the bell, an fyi stays quiet. A payload without inline text is
-/// described with where to fetch it. An item is acknowledged to Vibe Together, which moves the agent's read position,
-/// only once it has left `new/`, that is, once the agent took it in.
+/// described with where to fetch it. Each receive tells Vibe Together the last item delivered, as received, and the
+/// last that, with every item before it, has left `new/`, that is, the agent took it in, as read.
 ///
 /// The token is VIBETOGETHER_TOKEN, else the file ~/.config/vibetogether/token.
 ///

@@ -7,10 +7,10 @@ use serde::Deserialize;
 /// What a receive answers.
 #[derive(Deserialize, Debug, Clone)]
 pub struct Answer {
-  /// The items after the read position, oldest first.
+  /// The items after the received position, oldest first.
   pub items: Vec<Item>,
-  /// The read position stored now: every item up to it is acknowledged.
-  pub position: u64,
+  /// The received position stored now.
+  pub received: u64,
 }
 
 /// An item of the agent's stream, numbered on its own.
@@ -118,9 +118,15 @@ impl Client {
     &self.server
   }
 
-  /// Receives what comes after `position`, which acknowledges every item up to it, or after the stored position
-  /// if it is `None`. It returns as soon as there is an item, or after `wait` seconds.
-  pub fn receive(&self, position: Option<u64>, state: State, wait: u64) -> Result<Answer, Failure> {
+  /// Receives what comes after `received`, or after the stored received position if it is `None`, and stores `read`
+  /// where it is given. It returns as soon as there is an item, or after `wait` seconds.
+  pub fn receive(
+    &self,
+    received: Option<u64>,
+    read: Option<u64>,
+    state: State,
+    wait: u64,
+  ) -> Result<Answer, Failure> {
     let mut request = self
       .http
       .get(format!("{}/api/receive", self.server))
@@ -128,8 +134,10 @@ impl Client {
       .query("agent", &self.agent)
       .query("state", state.as_str())
       .query("wait", wait.to_string());
-    if let Some(position) = position {
-      request = request.query("position", position.to_string());
+    for (name, position) in [("received", received), ("read", read)] {
+      if let Some(position) = position {
+        request = request.query(name, position.to_string());
+      }
     }
     let mut response = request.call().map_err(|e| Failure::Retry(e.to_string()))?;
     let status = response.status().as_u16();

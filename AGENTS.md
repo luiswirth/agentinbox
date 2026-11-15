@@ -54,8 +54,9 @@ The concepts behind it are in `~/Documents/understanding/agents/glossary.md`, un
   - `wait` uses filesystem notifications, never polling.
   - `awake` holds the lock on `awake` until its stdin closes, so it goes when the harness dies.
 - The bridge `agentinbox-vibetogether` (`bridges/vibetogether/`), whose `--help` documents it:
-  it keeps one receive of the agent open, with `state` from the awake lock, delivers each item into the inbox, rings for a ping or a session's message, and acknowledges an item once it has left `new/`.
-  - Each item's first line, `Vibe Together item <n> (<reach>), session <name> (<id>):`, says where it is from, and after a restart the bridge recognises its items still in `new/` by it.
+  it keeps one receive of the agent open, with `state` from the awake lock, delivers each item into the inbox, and rings for a ping or a session's message.
+  Each receive names the last item delivered as `received`, and the last that, with every item before it, has left `new/` as `read`; it is issued again when `read` or the state changes.
+  - Each item's first line, `Vibe Together item <n> (<reach>), session <name> (<id>):`, says where it is from.
   - The repository is a Cargo workspace, and the flake's package holds both binaries.
 - Each harness is wired by what is in `harnesses/<harness>/`, so far:
   - Claude Code: `settings.json` holds the hooks that take in on each prompt and after each tool call.
@@ -77,11 +78,8 @@ The concepts behind it are in `~/Documents/understanding/agents/glossary.md`, un
   Untested.
 - Claude Code holds no awake lock: its hooks are short-lived processes, and none lasts a turn.
 
-- Vibe Together's receive answers at once while unacknowledged items are left, so no receive can wait while an item sits untaken in `new/`:
-  the bridge then receives every 10 seconds, which delays new items by as much.
-  A receive that names what it already has, apart from what it acknowledges, would end it.
-- An item taken in but not yet acknowledged when the bridge dies comes again after a restart, as a duplicate:
-  the bridge recognises only what is still in `new/`.
+- After a restart, the bridge knows nothing of the items it delivered before:
+  `read` moves past those still in `new/` once a later item is taken, and items delivered just before it died, before a receive named them, come again as duplicates.
 
 - What a ring with nothing new should say to an agent:
   The pi extension wakes it with a fixed line.
