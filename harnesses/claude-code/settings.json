@@ -1,0 +1,25 @@
+{
+	"hooks": {
+		"UserPromptSubmit": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "[ -z \"$AGENT_INBOX\" ] || agentinbox take"
+					}
+				]
+			}
+		],
+		"PostToolUse": [
+			{
+				"matcher": "*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "[ -z \"$AGENT_INBOX\" ] || agentinbox take | jq -Rsc 'select(length > 0) | {hookSpecificOutput: {hookEventName: \"PostToolUse\", additionalContext: .}}'"
+					}
+				]
+			}
+		]
+	}
+}
