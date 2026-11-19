@@ -1,52 +1,23 @@
 //! The machine's waker: one process that watches every inbox in a directory, answers each one's
-//! bell by running its `resume` while the agent is offline, and keeps its `providers` running.
+//! bell by running its `resume` while the agent is offline.
 
 use std::{
   collections::HashMap,
   ffi::OsString,
   fs, io,
-  os::unix::{fs::DirBuilderExt, process::CommandExt},
+  os::unix::fs::DirBuilderExt,
   path::Path,
   process::{Command, Stdio},
-  sync::{
-    Arc,
-    atomic::{AtomicI32, Ordering},
-    mpsc::{self, Receiver, RecvTimeoutError, Sender},
-  },
+  sync::mpsc::{self, Receiver, Sender},
   thread,
-  time::{Duration, Instant},
 };
 
 use agentinbox::Inbox;
 use notify::{RecursiveMode, Watcher};
 
-/// The pause before a provider that ended runs again, doubled at each end that comes soon after
-/// its start, up to the longest.
-const FIRST_PAUSE: Duration = Duration::from_secs(1);
-const LONGEST_PAUSE: Duration = Duration::from_secs(300);
-/// A provider that ran this long ended as it runs, not at its start: its pause starts over.
-const STEADY: Duration = Duration::from_secs(60);
-
-/// One inbox the waker keeps: the nudge to its answerer, and its providers, by their lines.
+/// One inbox the waker keeps, by the nudge to its answerer.
 struct Kept {
   nudge: Sender<()>,
-  providers: HashMap<String, Provider>,
-}
-
-/// A provider kept running: dropping it stops it.
-struct Provider {
-  _stop: Sender<()>,
-  group: Arc<AtomicI32>,
-}
-
-impl Drop for Provider {
-  fn drop(&mut self) {
-    let group = self.group.load(Ordering::SeqCst);
-    if group > 0 {
-      // SAFETY: a signal to the process group the provider leads; it names no memory.
-      unsafe { libc::kill(-group, libc::SIGTERM) };
-    }
-  }
 }
 
 pub fn run(dir: &Path) -> io::Result<()> {
@@ -101,8 +72,8 @@ pub fn run(dir: &Path) -> io::Result<()> {
   Ok(())
 }
 
-/// Brings one inbox in line with its directory: starts keeping it, follows its `providers`, and
-/// nudges its answerer; drops it where it is gone.
+/// Brings one inbox in line with its directory: starts keeping it and nudges its answerer;
+/// drops it where it is gone.
 fn keep(dir: &Path, name: &OsString, kept: &mut HashMap<OsString, Kept>) {
   let root = dir.join(name);
   if name.to_string_lossy().starts_with('.') || !root.is_dir() {
@@ -117,78 +88,9 @@ fn keep(dir: &Path, name: &OsString, kept: &mut HashMap<OsString, Kept>) {
         eprintln!("agentinbox: {}: {error}", inbox.root.display());
       }
     });
-    Kept {
-      nudge,
-      providers: HashMap::new(),
-    }
+    Kept { nudge }
   });
   let _ = entry.nudge.send(());
-  let lines = match Inbox::new(&root).providers() {
-    Ok(lines) => lines,
-    Err(error) => {
-      eprintln!("agentinbox: {error}");
-      return;
-    }
-  };
-  entry.providers.retain(|line, _| lines.contains(line));
-  for line in lines {
-    entry
-      .providers
-      .entry(line.clone())
-      .or_insert_with(|| provide(&root, line));
-  }
-}
-
-/// Keeps a provider's command running, again after a pause where it ends, until stopped.
-fn provide(root: &Path, line: String) -> Provider {
-  let (stop, stopped) = mpsc::channel::<()>();
-  let group = Arc::new(AtomicI32::new(0));
-  let running = group.clone();
-  let root = root.to_path_buf();
-  thread::spawn(move || {
-    let mut pause = FIRST_PAUSE;
-    loop {
-      let start = Instant::now();
-      match Command::new("sh")
-        .args(["-c", &line])
-        .env("AGENT_INBOX", &root)
-        .stdin(Stdio::null())
-        .process_group(0)
-        .spawn()
-      {
-        Ok(mut child) => {
-          running.store(child.id() as i32, Ordering::SeqCst);
-          // Stopped while it started: its stop found no group to end.
-          if let Err(mpsc::TryRecvError::Disconnected) = stopped.try_recv() {
-            // SAFETY: as in `Provider::drop`.
-            unsafe { libc::kill(-(child.id() as i32), libc::SIGTERM) };
-          }
-          let status = child.wait();
-          running.store(0, Ordering::SeqCst);
-          if let Err(mpsc::TryRecvError::Disconnected) = stopped.try_recv() {
-            return;
-          }
-          match status {
-            Ok(status) => eprintln!(
-              "agentinbox: {}: the provider `{line}` ended: {status}",
-              root.display()
-            ),
-            Err(error) => eprintln!("agentinbox: {}: `{line}`: {error}", root.display()),
-          }
-        }
-        Err(error) => eprintln!("agentinbox: {}: `{line}`: {error}", root.display()),
-      }
-      pause = if start.elapsed() >= STEADY {
-        FIRST_PAUSE
-      } else {
-        (pause * 2).min(LONGEST_PAUSE)
-      };
-      if let Err(RecvTimeoutError::Disconnected) = stopped.recv_timeout(pause) {
-        return;
-      }
-    }
-  });
-  Provider { _stop: stop, group }
 }
 
 /// Answers the inbox's bell, nudged at each change in it, until the inbox is gone: once the

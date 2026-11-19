@@ -3,8 +3,7 @@
 //! `new/` holds the items not yet taken in, `cur/` the taken ones, `tmp/` the ones being written,
 //! the file `wake` is the doorbell, a lock on the file `awake` says the agent is in a turn, and a
 //! lock on the file `asleep` says that a mind of it waits and will wake itself. The file `resume`
-//! holds the command that brings the agent's mind back, and the file `providers` the commands
-//! that keep its perceptions coming; the machine's waker runs both.
+//! holds the command that brings the agent's mind back, which the machine's waker runs.
 //!
 //! An item is one file, named `<time>.<sender>.<ext>`, such as `20261115T153012.123456Z.luis.md`,
 //! with the time in UTC to the microsecond, so that the names sort by time, and the sender
@@ -81,9 +80,6 @@ impl Inbox {
   pub fn resume_file(&self) -> PathBuf {
     self.root.join("resume")
   }
-  pub fn providers_file(&self) -> PathBuf {
-    self.root.join("providers")
-  }
 
   /// The command that brings the agent's mind back, as whoever started it wrote it, if any.
   pub fn resume(&self) -> io::Result<Option<String>> {
@@ -91,24 +87,6 @@ impl Inbox {
     match fs::read_to_string(&path) {
       Ok(command) => Ok(Some(command.trim().to_string()).filter(|c| !c.is_empty())),
       Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-      Err(e) => Err(at(e, &path)),
-    }
-  }
-
-  /// The commands that keep the agent's perceptions coming, one per line of `providers`, such
-  /// as a receive from Vibe Together; `#` starts a comment.
-  pub fn providers(&self) -> io::Result<Vec<String>> {
-    let path = self.providers_file();
-    match fs::read_to_string(&path) {
-      Ok(list) => Ok(
-        list
-          .lines()
-          .map(|line| line.split('#').next().unwrap_or_default().trim())
-          .filter(|line| !line.is_empty())
-          .map(str::to_string)
-          .collect(),
-      ),
-      Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
       Err(e) => Err(at(e, &path)),
     }
   }

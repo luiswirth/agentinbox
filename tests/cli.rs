@@ -217,38 +217,3 @@ fn asleep_is_held_while_the_process_lives() {
   assert!(!inbox.asleep().unwrap());
   fs::remove_dir_all(&home).unwrap();
 }
-
-/// The waker keeps each line of `providers` running, and stops it once the line is gone.
-#[test]
-fn the_waker_keeps_the_providers_running() {
-  let home = home("providers");
-  let root = home.join("inboxes/agent");
-  let inbox = Inbox::new(&root);
-  inbox.create().unwrap();
-  let pid = home.join("pid");
-  fs::write(
-    inbox.providers_file(),
-    format!(
-      "# a provider\necho hi | agentinbox deliver --from provider; echo $$ >'{}'; exec sleep 100\n",
-      pid.display()
-    ),
-  )
-  .unwrap();
-  let _waker = waker(&home);
-  until("provided", || {
-    fs::read_to_string(&pid).is_ok_and(|p| p.ends_with('\n'))
-  });
-  assert!(inbox.oldest_untaken().unwrap().is_some());
-  let pid: i32 = fs::read_to_string(&pid).unwrap().trim().parse().unwrap();
-  let alive = || {
-    Command::new("kill")
-      .args(["-0", &pid.to_string()])
-      .status()
-      .unwrap()
-      .success()
-  };
-  assert!(alive());
-  fs::write(inbox.providers_file(), "").unwrap();
-  until("stopped", || !alive());
-  fs::remove_dir_all(&home).unwrap();
-}

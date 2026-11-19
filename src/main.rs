@@ -89,9 +89,7 @@ enum Command {
   /// untaken, holding the awake lock meanwhile. A ring while a mind is awake or asleep is that
   /// mind's, and only what it leaves untaken is answered; a ring with nothing new, or in an
   /// inbox with no `resume`, runs nothing. It stops answering a ring after a run that failed or
-  /// took nothing in. It also keeps each line of an inbox's file `providers` running, each with
-  /// `sh -c` and `AGENT_INBOX`, again after a pause where one ends, until the line or the inbox
-  /// is gone. It runs until stopped.
+  /// took nothing in. It runs until stopped.
   Waker {
     /// The directory of the inboxes.
     #[arg(default_value_os_t = default_inboxes())]
