@@ -28,10 +28,10 @@ Providers are of two kinds, proposed by an agent with the split (2026-11-18): ev
 
 - A perception reports a change, not a clock, and states information, never policy, Luis's decisions in Hivemind, built back into the inbox at his request (2026-11-16): "let's have all hivemind perceptions that are valuable and make sense be built back into the inbox."
 - An event provider is anything that writes into the directory, as it happens, so the inbox knows none: adding one is starting it, removing one is stopping it.
-  Such as Vibe Together's `vibetogether inbox receive` (`~/dev/vibetogether`), messagent's Telegram chats (`~/dev/messagent`), or a daemon's impulse.
+  Such as Vibe Together's `vibetogether inbox receive` (`~/dev/vibetogether`), messagent's Telegram chats (`~/dev/agentics/messagent`), or a daemon's impulse.
 - A reading is a command that `take` runs first, at each step, so that what it delivers is taken in the same step; the readings are the lines of `agentinbox/readings` in the user's config directory, each run with `sh -c` and `AGENT_INBOX`, and one that fails is reported and passed over.
   A reading delivers quietly, only as it crosses a mark, and keeps the mark it told last in a file of the inbox named after it.
-  The readings so far are the senses (`~/dev/senses`):
+  The readings so far are the senses (`~/dev/agentics/senses`):
   - The time: `clock` tells the date and time once 15 minutes have passed since it last did; the clock is outside the agent, but how long a step took is proprioception, Luis's decisions (2026-11-18): "for time, we only provide a timestamp (date + time). not how long the last command took. that's elegant and external", "i think the timestemp should appear regurarly after some time has passed", "sure 15 mins is okay."
   - Quotas: valuable to pace the work, Luis's decision (2026-11-16); `claude-usage` tells a Claude subscription's usage limits.
 
