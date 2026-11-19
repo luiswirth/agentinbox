@@ -8,6 +8,8 @@ use std::{
 };
 
 use agentinbox::{Inbox, Outbox, extension};
+
+mod waker;
 use clap::{Parser, Subcommand};
 
 /// The agent's inbox: its perception of everything outside it.
@@ -17,6 +19,8 @@ use clap::{Parser, Subcommand};
 /// `wake` is the doorbell, and the agent is awake while a lock on the file `awake` is held. Each
 /// item is one file, named `<time>.<sender>.<ext>`, with the time in UTC. Delivering is quiet:
 /// the agent sees the item at its next step; ringing the bell also wakes an agent that is idle.
+/// A mind that waits and wakes itself holds a lock on `asleep`; with neither lock held, the
+/// agent is offline, and the machine's waker answers a ring by running the inbox's `resume`.
 /// Anything can deliver without this command, by writing a file into `tmp/` and renaming it
 /// into `new/`, and ring with `touch wake`.
 #[derive(Parser)]
@@ -68,17 +72,30 @@ enum Command {
   /// background command, or from a watcher that starts the agent. It takes nothing in: run
   /// `take` after it.
   Wait,
-  /// Answers the bell by running a command, such as a harness's one-shot run.
+  /// Holds the asleep lock until stdin closes, or until the process `--pid` ends: a mind of
+  /// the agent waits meanwhile and will wake itself, so the waker leaves its rings to it.
   ///
-  /// Once no mind of the agent is awake, it runs the command while items are untaken, holding
-  /// the awake lock meanwhile. A ring while a mind is awake is that mind's, and only what it
-  /// leaves untaken is answered; a ring with nothing new runs nothing. It stops answering a ring
-  /// after a run that failed or took nothing in. The command gets `AGENT_INBOX`. It runs until
-  /// stopped.
-  Wake {
-    /// The command and its arguments, after `--`.
-    #[arg(trailing_var_arg = true, required = true, value_name = "COMMAND")]
-    command: Vec<String>,
+  /// An interactive harness holds it for as long as its session is open, such as pi's
+  /// extension with a pipe, or Claude Code's start hook with `--pid`, which detaches it.
+  Asleep {
+    /// The process whose end releases the lock, such as the harness's.
+    #[arg(long)]
+    pid: Option<i32>,
+  },
+  /// The machine's waker: watches every inbox in a directory and answers each one's bell.
+  ///
+  /// A ring is answered once the agent is offline, holding neither `awake` nor `asleep`: it runs
+  /// the inbox's file `resume`, a command run with `sh -c` and `AGENT_INBOX`, while items are
+  /// untaken, holding the awake lock meanwhile. A ring while a mind is awake or asleep is that
+  /// mind's, and only what it leaves untaken is answered; a ring with nothing new, or in an
+  /// inbox with no `resume`, runs nothing. It stops answering a ring after a run that failed or
+  /// took nothing in. It also keeps each line of an inbox's file `providers` running, each with
+  /// `sh -c` and `AGENT_INBOX`, again after a pause where one ends, until the line or the inbox
+  /// is gone. It runs until stopped.
+  Waker {
+    /// The directory of the inboxes.
+    #[arg(default_value_os_t = default_inboxes())]
+    dir: PathBuf,
   },
   /// Holds the awake lock until stdin closes: the agent is awake meanwhile.
   ///
@@ -123,6 +140,9 @@ fn run(cli: Cli) -> io::Result<()> {
     extension(ty)
       .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("unknown type `{ty}`")))
   };
+  if let Command::Waker { dir } = &cli.command {
+    return waker::run(dir);
+  }
   if let Command::Send { recipient, ty } = &cli.command {
     let root = cli
       .outbox
@@ -155,10 +175,29 @@ fn run(cli: Cli) -> io::Result<()> {
       let _lock = inbox.hold_awake()?;
       io::copy(&mut io::stdin().lock(), &mut io::sink())?;
     }
-    Command::Wake { command } => wake(&inbox, &command)?,
-    Command::Send { .. } => unreachable!("handled above"),
+    Command::Asleep { pid } => {
+      let _lock = inbox.hold_asleep()?;
+      match pid {
+        Some(pid) => {
+          waker::detach();
+          waker::until_ended(pid)?;
+        }
+        None => {
+          io::copy(&mut io::stdin().lock(), &mut io::sink())?;
+        }
+      }
+    }
+    Command::Send { .. } | Command::Waker { .. } => unreachable!("handled above"),
   }
   Ok(())
+}
+
+/// The inboxes' directory by convention, `~/.agents/inbox/`.
+fn default_inboxes() -> PathBuf {
+  env::var_os("HOME")
+    .map(PathBuf::from)
+    .unwrap_or_default()
+    .join(".agents/inbox")
 }
 
 /// The file that lists the readings: `agentinbox/readings` in the user's config directory.
@@ -203,33 +242,4 @@ fn readings(inbox: &Inbox) -> io::Result<()> {
     }
   }
   Ok(())
-}
-
-/// Answers the bell: once no mind of the agent is awake, takes the ring and, while something is
-/// untaken, runs `command` as the agent's turn, holding the awake lock. A ring that comes while a
-/// mind is awake is that mind's: it stays for the mind's own wait, and only what is left once
-/// the mind sleeps is answered. It stops answering a ring after a run that failed, or that took
-/// nothing in, so that a broken command doesn't run in a loop.
-fn wake(inbox: &Inbox, command: &[String]) -> io::Result<()> {
-  loop {
-    inbox.rung()?;
-    let _turn = inbox.hold_awake()?;
-    if !inbox.unring()? {
-      continue;
-    }
-    while let Some(oldest) = inbox.oldest_untaken()? {
-      let status = Process::new(&command[0])
-        .args(&command[1..])
-        .env("AGENT_INBOX", &inbox.root)
-        .status()?;
-      if !status.success() {
-        eprintln!("agentinbox: the woken command failed: {status}");
-        break;
-      }
-      if inbox.new_dir().join(&oldest).exists() {
-        eprintln!("agentinbox: the woken command took nothing in");
-        break;
-      }
-    }
-  }
 }

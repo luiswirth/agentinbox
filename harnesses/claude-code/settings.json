@@ -1,11 +1,21 @@
 {
 	"hooks": {
+		"SessionStart": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "/path/to/agentinbox/harnesses/claude-code/inbox.sh"
+					}
+				]
+			}
+		],
 		"UserPromptSubmit": [
 			{
 				"hooks": [
 					{
 						"type": "command",
-						"command": "[ -z \"$AGENT_INBOX\" ] || agentinbox take"
+						"command": "/path/to/agentinbox/harnesses/claude-code/inbox.sh"
 					}
 				]
 			}
@@ -16,7 +26,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "[ -z \"$AGENT_INBOX\" ] || agentinbox take | jq -Rsc 'select(length > 0) | {hookSpecificOutput: {hookEventName: \"PostToolUse\", additionalContext: .}}'"
+						"command": "/path/to/agentinbox/harnesses/claude-code/inbox.sh"
 					}
 				]
 			}

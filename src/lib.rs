@@ -1,7 +1,10 @@
 //! An agent's inbox, its perception of everything outside it: a directory like a maildir, which
 //! anything may deliver into:
 //! `new/` holds the items not yet taken in, `cur/` the taken ones, `tmp/` the ones being written,
-//! the file `wake` is the doorbell, and a lock on the file `awake` says the agent is in a turn.
+//! the file `wake` is the doorbell, a lock on the file `awake` says the agent is in a turn, and a
+//! lock on the file `asleep` says that a mind of it waits and will wake itself. The file `resume`
+//! holds the command that brings the agent's mind back, and the file `providers` the commands
+//! that keep its perceptions coming; the machine's waker runs both.
 //!
 //! An item is one file, named `<time>.<sender>.<ext>`, such as `20261115T153012.123456Z.luis.md`,
 //! with the time in UTC to the microsecond, so that the names sort by time, and the sender
@@ -71,6 +74,43 @@ impl Inbox {
   }
   pub fn awake_file(&self) -> PathBuf {
     self.root.join("awake")
+  }
+  pub fn asleep_file(&self) -> PathBuf {
+    self.root.join("asleep")
+  }
+  pub fn resume_file(&self) -> PathBuf {
+    self.root.join("resume")
+  }
+  pub fn providers_file(&self) -> PathBuf {
+    self.root.join("providers")
+  }
+
+  /// The command that brings the agent's mind back, as whoever started it wrote it, if any.
+  pub fn resume(&self) -> io::Result<Option<String>> {
+    let path = self.resume_file();
+    match fs::read_to_string(&path) {
+      Ok(command) => Ok(Some(command.trim().to_string()).filter(|c| !c.is_empty())),
+      Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+      Err(e) => Err(at(e, &path)),
+    }
+  }
+
+  /// The commands that keep the agent's perceptions coming, one per line of `providers`, such
+  /// as a receive from Vibe Together; `#` starts a comment.
+  pub fn providers(&self) -> io::Result<Vec<String>> {
+    let path = self.providers_file();
+    match fs::read_to_string(&path) {
+      Ok(list) => Ok(
+        list
+          .lines()
+          .map(|line| line.split('#').next().unwrap_or_default().trim())
+          .filter(|line| !line.is_empty())
+          .map(str::to_string)
+          .collect(),
+      ),
+      Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+      Err(e) => Err(at(e, &path)),
+    }
   }
 
   /// Creates the inbox's directories where they are missing, its owner's alone.
@@ -197,31 +237,47 @@ impl Inbox {
   /// and then the system releases the lock, so it never goes stale.
   pub fn hold_awake(&self) -> io::Result<fs::File> {
     self.create()?;
-    let path = self.awake_file();
+    let (file, path) = self.lock_file(self.awake_file())?;
+    file.lock().map_err(|e| at(e, &path))?;
+    Ok(file)
+  }
+
+  /// Takes a shared lock on `asleep`: a mind of the agent waits and will wake itself, such as an
+  /// interactive session that keeps a `wait` running, until the returned file is dropped or the
+  /// process ends. Several may hold it at once.
+  pub fn hold_asleep(&self) -> io::Result<fs::File> {
+    self.create()?;
+    let (file, path) = self.lock_file(self.asleep_file())?;
+    file.lock_shared().map_err(|e| at(e, &path))?;
+    Ok(file)
+  }
+
+  /// Blocks while any mind holds `asleep`: once it returns, none did a moment ago. It fails
+  /// where the inbox is gone, and never makes it again.
+  pub fn until_no_sleeper(&self) -> io::Result<()> {
+    let (file, path) = self.lock_file(self.asleep_file())?;
+    file.lock().map_err(|e| at(e, &path))
+  }
+
+  fn lock_file(&self, path: PathBuf) -> io::Result<(fs::File, PathBuf)> {
     let file = fs::OpenOptions::new()
       .create(true)
       .append(true)
       .mode(0o600)
       .open(&path)
       .map_err(|e| at(e, &path))?;
-    file.lock().map_err(|e| at(e, &path))?;
-    Ok(file)
+    Ok((file, path))
   }
 
   /// Whether the agent is awake: whether any open file holds the lock on `awake`, in this process or another.
   /// It tests by taking the lock for a moment, during which a `hold_awake` waits.
   pub fn awake(&self) -> io::Result<bool> {
-    let path = self.awake_file();
-    let file = match fs::File::open(&path) {
-      Ok(file) => file,
-      Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-      Err(e) => return Err(at(e, &path)),
-    };
-    match file.try_lock() {
-      Ok(()) => Ok(false),
-      Err(fs::TryLockError::WouldBlock) => Ok(true),
-      Err(fs::TryLockError::Error(e)) => Err(at(e, &path)),
-    }
+    held(&self.awake_file())
+  }
+
+  /// Whether a mind of the agent is asleep: whether any open file holds the lock on `asleep`.
+  pub fn asleep(&self) -> io::Result<bool> {
+    held(&self.asleep_file())
   }
 
   /// Blocks until the bell rings, then removes `wake`.
@@ -259,6 +315,20 @@ impl Inbox {
         .map_err(io::Error::other)?;
     }
     Ok(())
+  }
+}
+
+/// Whether any open file holds a lock on `path`, tested by taking it exclusively for a moment.
+fn held(path: &Path) -> io::Result<bool> {
+  let file = match fs::File::open(path) {
+    Ok(file) => file,
+    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+    Err(e) => return Err(at(e, path)),
+  };
+  match file.try_lock() {
+    Ok(()) => Ok(false),
+    Err(fs::TryLockError::WouldBlock) => Ok(true),
+    Err(fs::TryLockError::Error(e)) => Err(at(e, path)),
   }
 }
 

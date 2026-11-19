@@ -1,16 +1,24 @@
 // Takes in the agent's inbox at each step, wakes the agent when the bell rings, and holds the
-// awake lock while a run lasts.
-// Does nothing unless AGENT_INBOX is set.
+// awake lock while a run lasts and the asleep lock while an interactive session is open.
+// The inbox is AGENT_INBOX where pi was started with one, else ~/.agents/inbox/pi-<session id>,
+// made at the session's start, which then gets a `resume` that brings the session back where it
+// has none; the resume finds this extension installed where pi loads it for every session.
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const customType = "inbox";
 
+const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+
 export default function (pi: ExtensionAPI) {
-	if (!process.env.AGENT_INBOX) return;
+	let inbox = process.env.AGENT_INBOX;
 
 	async function take(): Promise<string> {
+		if (!inbox) return "";
 		const result = await pi.exec("agentinbox", ["take"]);
 		if (result.code !== 0) throw new Error(`agentinbox take: ${result.stderr}`);
 		return result.stdout;
@@ -40,7 +48,7 @@ export default function (pi: ExtensionAPI) {
 	let oneShot = false;
 
 	function wait() {
-		if (stopped) return;
+		if (stopped || !inbox) return;
 		waiter = spawn("agentinbox", ["wait"], { stdio: "ignore" });
 		waiter.on("exit", async (code) => {
 			waiter = undefined;
@@ -62,7 +70,7 @@ export default function (pi: ExtensionAPI) {
 	let awake: ChildProcess | undefined;
 
 	pi.on("agent_start", () => {
-		if (stopped || awake || oneShot) return;
+		if (stopped || awake || oneShot || !inbox) return;
 		const holder = spawn("agentinbox", ["awake"], {
 			stdio: ["pipe", "ignore", "ignore"],
 		});
@@ -82,15 +90,48 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_settled", sleep);
 
+	// An interactive session waits for the bell itself, so the machine's waker leaves its rings to it,
+	// for as long as it is open.
+	let asleep: ChildProcess | undefined;
+
 	function stop() {
 		stopped = true;
 		waiter?.kill();
 		sleep();
+		asleep?.stdin?.end();
+		asleep = undefined;
 	}
 
 	pi.on("session_start", (_event, ctx) => {
 		oneShot = ctx.mode === "print" || ctx.mode === "json";
-		if (!oneShot) wait();
+		const session = ctx.sessionManager;
+		if (!inbox) {
+			inbox = join(
+				homedir(),
+				".agents",
+				"inbox",
+				`pi-${session.getSessionId()}`,
+			);
+			process.env.AGENT_INBOX = inbox;
+		}
+		for (const dir of ["new", "cur", "tmp"])
+			mkdirSync(join(inbox, dir), { recursive: true, mode: 0o700 });
+		const file = session.getSessionFile();
+		const resume = join(inbox, "resume");
+		if (file && !statSync(resume, { throwIfNoEntry: false })?.size) {
+			writeFileSync(
+				`${resume}.tmp`,
+				`cd ${quote(session.getCwd())} && pi -p --session ${quote(file)} 'Your inbox rang: what is new is given to you as inbox items.' </dev/null\n`,
+				{ mode: 0o600 },
+			);
+			renameSync(`${resume}.tmp`, resume);
+		}
+		if (oneShot) return;
+		asleep = spawn("agentinbox", ["asleep"], {
+			stdio: ["pipe", "ignore", "ignore"],
+		});
+		asleep.stdin?.on("error", () => {});
+		wait();
 	});
 	pi.on("session_shutdown", stop);
 	process.on("exit", stop);

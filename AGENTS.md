@@ -14,12 +14,15 @@ Of the three ways content gets in, always (such as `AGENTS.md`), pulled (read by
 - The sender proposes whether an item wakes, and the agent's do-not-disturb settings dispose, Luis (2026-11-16): "sure embrace the inbox", and they are one with do not disturb: "should inbox policy merge with do not disturb? i think maybe yes".
   They are the inbox's file `do-not-disturb`, which the agent keeps itself: each line fields to match and `ring` or `quiet`, the last match deciding, the proposal standing where none does; `quiet` alone is full do not disturb.
   Every perception passes it, a provider matching by the fields it names, at least `from`; so no provider decides about waking.
-- Running an agent is four pieces, Luis (2026-11-16): "sounds reasonable": its identity (such as Vibe Together's agent, token and hold), its perception and bell (this inbox), the **waker**, which starts a harness run when the bell rings and no mind holds the agent, and its standing job (briefing, ledger, impulses), which is its setup's, such as dothome's `daemon`.
-  The waker is part of the inbox, harness-agnostic and anyone's, so spawning an agent is creating it, giving it an inbox and running a waker; the impulse rings, the waker answers.
-  The waker, `wake -- <command>`, answers a ring once no mind holds `awake`, by running the command while something is untaken, holding `awake` meanwhile; a ring while a mind is awake is that mind's, left for its own `wait`, so only what it leaves untaken is answered, and a ring with nothing new runs nothing; a run that fails or takes nothing in ends the answer, so a broken command never loops.
-- The agent is awake while its harness holds a lock on the file `awake`, for as long as a turn runs, Luis's decision (2026-11-15): state is held, never declared, and the system releases the lock when the turn ends or the harness dies.
+- Running an agent is four pieces, Luis (2026-11-16): "sounds reasonable": its identity (such as Vibe Together's agent, token and hold), its perception and bell (this inbox), the **waker**, which brings the agent's mind back when the bell rings while it is offline, and its standing job (briefing, ledger, impulses), which is its setup's, such as dothome's `daemon`.
+- Every agent is reachable and wakeable from its start, and a daemon is only an agent with a standing job, decided with Luis (2026-11-19): "any agent could become a callee", and on waking: "isn't waking part of the responsbility of the inbox? ... can we rewrite the inbox to naturally support daemons?"
+  - The inbox's file `resume` is the command that brings this agent's mind back, run with `sh -c` and `AGENT_INBOX`; whoever starts the agent writes it, through the harness wiring, which writes one only where there is none, so a daemon's own stays. Deliveries still write only `tmp/` and `new/`.
+  - Presence is like Vibe Together's: awake while a lock on `awake` is held, a turn running; asleep while a shared lock on `asleep` is held, by a mind that waits and wakes itself, such as an open interactive session; offline otherwise. Vibe Together shows offline as asleep, since a ping wakes the agent either way.
+  - One waker per machine, `agentinbox waker`, watches every inbox under `~/.agents/inbox/` and answers a ring only while the agent is offline, by running `resume` while something is untaken, holding `awake` meanwhile; a ring while a mind is awake or asleep is that mind's, a run that fails or takes nothing in ends the answer, so a broken command never loops. Without the asleep lock, it would resume an idle interactive session in a second process on the same transcript.
+  - The waker also keeps each line of an inbox's file `providers` running, such as a receive from Vibe Together, again after a pause where one ends, until the line or the inbox is gone, decided by an agent while building it (2026-11-19), since every agent's event providers have to outlive its session and its starter; it knows none of them.
+  - An agent that won't come back removes its inbox, which stops its providers.
 - The inbox is `~/.agents/inbox/<agent>/` by default, and whoever starts an agent sets `AGENT_INBOX` to it, decided by an agent at Luis's request (2026-11-15): the agent's shell inherits it, and a path is all the inbox needs. Without it, nothing is taken in.
-- The crate `agentinbox` holds it, and its command line `agentinbox`, whose `--help` documents it: `deliver`, `ring`, `take`, `wait`, `wake`, `awake` and `send`.
+- The crate `agentinbox` holds it, and its command line `agentinbox`, whose `--help` documents it: `deliver`, `ring`, `take`, `wait`, `awake`, `asleep`, `waker` and `send`.
 
 ## Providers
 
@@ -38,8 +41,9 @@ Providers are of two kinds, proposed by an agent with the split (2026-11-18): ev
 ## Harnesses
 
 - Each harness is wired by `harnesses/<harness>/`, which knows only the inbox, never a provider, Luis (2026-11-18): "claude should only know about the inbox or something similar. one piece, that delivers all messagse, senses etc."
-  - Claude Code: `settings.json`'s hooks take in on each prompt and after each tool call; a running agent wakes by running `agentinbox wait && agentinbox take` as a background command, and runs it again.
-  - pi: the extension `inbox.ts` takes in at each step, keeps a `wait` running, which steers what is new into a busy agent and starts a turn in an idle one, and holds `agentinbox awake` from `agent_start` until `agent_settled`; a one-shot run (`-p`) keeps no `wait` and holds no awake lock, so whoever starts it hears the bell and holds the lock, such as the waker, whose lock a run's own holder would otherwise wait on while the waker waits for the run.
+  At a session's start, the wiring makes its inbox, `AGENT_INBOX` where it was started with one, else `~/.agents/inbox/<harness>-<session id>`, writes `resume` where there is none, and holds `asleep` while an interactive session is open.
+  - Claude Code: `inbox.sh` is the hook of `SessionStart`, `UserPromptSubmit` and `PostToolUse` (`settings.json`); a hook gets no environment from the session, so it finds the inbox by the session's id. At the start, it gives the session's commands `AGENT_INBOX` through `CLAUDE_ENV_FILE`, writes `claude -p --resume <session id>` as `resume`, which keeps the session's id, and holds `asleep` with `agentinbox asleep --pid` on the Claude Code process; it takes in on each prompt and after each tool call. A running agent wakes by running `agentinbox wait && agentinbox take` as a background command, and runs it again; one that doesn't hears its rings only once its session ends, from the waker.
+  - pi: the extension `inbox.ts`, installed for every session, takes in at each step, keeps a `wait` running, which steers what is new into a busy agent and starts a turn in an idle one, holds `agentinbox awake` from `agent_start` until `agent_settled` and `agentinbox asleep` while the session is open, and writes `pi -p --session <file>` as `resume`; a one-shot run (`-p`) keeps no `wait` and holds no lock, so the waker that started it holds `awake` for it.
 
 ## The outbox
 
@@ -55,11 +59,11 @@ Providers are of two kinds, proposed by an agent with the split (2026-11-18): ev
 
 ## Open
 
-- An interactive session no one started with `AGENT_INBOX`, such as a plain Claude Code window.
 - Claude Code: its hooks are ignored on Luis's machines, whose managed settings allow only managed hooks, so wiring them goes through `dothome`; a `Stop` hook with `asyncRewake` might wake an idle agent, untested; it holds no awake lock, since no hook lasts a turn.
+- An interactive session resumed by hand while the waker runs its resume is two minds on one session: the locks exclude only the waker.
 - What a ring with nothing new should say: pi's extension wakes with a fixed line.
 - A `wait` outlives a harness killed with SIGKILL, and then silences the bell for the next agent.
-- The awake lock excludes only wakers: pi's extension starts its turn without waiting for the lock, and a waker killed alone, not with its process group, frees the lock while its run goes on.
+- The awake lock excludes only the waker: pi's extension starts its turn without waiting for the lock, and a waker killed alone, not with its process group, frees the lock while its run goes on.
 - Hivemind's other senses, judged 2026-11-16:
   - The context's size: proprioception, the harness's, never the inbox's, Luis's decision (2026-11-18): "we don't track context size at all in inbox. it's harness internal."
   - Sight: how an image reaches a model is the harness's, no delivery.

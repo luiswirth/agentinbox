@@ -93,3 +93,162 @@ fn a_take_runs_the_readings_first() {
   assert!(stderr.contains("the reading `exit 3` failed"), "{stderr}");
   fs::remove_dir_all(&home).unwrap();
 }
+
+/// The PATH with this very binary first, so that what a test runs finds it as `agentinbox`.
+fn path_with_binary() -> std::ffi::OsString {
+  let bin = Path::new(env!("CARGO_BIN_EXE_agentinbox"))
+    .parent()
+    .unwrap();
+  std::env::join_paths(
+    std::iter::once(bin.to_path_buf())
+      .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+  )
+  .unwrap()
+}
+
+/// Kills the waker when the test ends, also when it fails.
+struct Running(std::process::Child);
+impl Drop for Running {
+  fn drop(&mut self) {
+    let _ = self.0.kill();
+    let _ = self.0.wait();
+  }
+}
+
+fn waker(home: &Path) -> Running {
+  Running(
+    agentinbox(home, &["waker", home.join("inboxes").to_str().unwrap()])
+      .env("PATH", path_with_binary())
+      .spawn()
+      .unwrap(),
+  )
+}
+
+fn deliver(home: &Path, inbox: &Path, text: &str) {
+  let mut deliver = agentinbox(home, &["deliver", "--from", "luis", "--wake"])
+    .env("AGENT_INBOX", inbox)
+    .stdin(Stdio::piped())
+    .spawn()
+    .unwrap();
+  use std::io::Write;
+  deliver
+    .stdin
+    .take()
+    .unwrap()
+    .write_all(text.as_bytes())
+    .unwrap();
+  assert!(deliver.wait().unwrap().success());
+}
+
+/// The waker answers a ring of an offline agent by running its `resume`, and leaves a ring to a
+/// mind that is asleep until it is gone.
+#[test]
+fn the_waker_resumes_an_offline_agent_and_leaves_a_sleeper_its_rings() {
+  let home = home("waker");
+  let root = home.join("inboxes/agent");
+  let inbox = Inbox::new(&root);
+  inbox.create().unwrap();
+  let log = home.join("log");
+  fs::write(
+    inbox.resume_file(),
+    format!("agentinbox take >>'{}'", log.display()),
+  )
+  .unwrap();
+  let _waker = waker(&home);
+
+  deliver(&home, &root, "first");
+  until("resumed", || {
+    fs::read_to_string(&log).is_ok_and(|log| log.contains("first"))
+  });
+
+  let mut sleeper = agentinbox(&home, &["asleep"])
+    .env("AGENT_INBOX", &root)
+    .stdin(Stdio::piped())
+    .spawn()
+    .unwrap();
+  until("asleep", || inbox.asleep().unwrap());
+  deliver(&home, &root, "second");
+  thread::sleep(Duration::from_millis(500));
+  assert!(!fs::read_to_string(&log).unwrap().contains("second"));
+  assert!(inbox.wake_file().exists());
+
+  drop(sleeper.stdin.take());
+  assert!(sleeper.wait().unwrap().success());
+  until("resumed once the sleeper left", || {
+    fs::read_to_string(&log).unwrap().contains("second")
+  });
+  fs::remove_dir_all(&home).unwrap();
+}
+
+/// A run that takes nothing in ends the answer: a broken resume never loops.
+#[test]
+fn a_resume_that_takes_nothing_in_runs_once() {
+  let home = home("broken");
+  let root = home.join("inboxes/agent");
+  let inbox = Inbox::new(&root);
+  inbox.create().unwrap();
+  let count = home.join("count");
+  fs::write(
+    inbox.resume_file(),
+    format!("echo run >>'{}'", count.display()),
+  )
+  .unwrap();
+  let _waker = waker(&home);
+  deliver(&home, &root, "hello");
+  until("run", || count.exists());
+  thread::sleep(Duration::from_millis(500));
+  assert_eq!(fs::read_to_string(&count).unwrap(), "run\n");
+  fs::remove_dir_all(&home).unwrap();
+}
+
+/// `asleep --pid` holds the lock until that process ends.
+#[test]
+fn asleep_is_held_while_the_process_lives() {
+  let home = home("asleep-pid");
+  let inbox = Inbox::new(home.join("inbox"));
+  let mut process = Command::new("sleep").arg("100").spawn().unwrap();
+  let mut holder = agentinbox(&home, &["asleep", "--pid", &process.id().to_string()])
+    .spawn()
+    .unwrap();
+  until("asleep", || inbox.asleep().unwrap());
+  process.kill().unwrap();
+  process.wait().unwrap();
+  assert!(holder.wait().unwrap().success());
+  assert!(!inbox.asleep().unwrap());
+  fs::remove_dir_all(&home).unwrap();
+}
+
+/// The waker keeps each line of `providers` running, and stops it once the line is gone.
+#[test]
+fn the_waker_keeps_the_providers_running() {
+  let home = home("providers");
+  let root = home.join("inboxes/agent");
+  let inbox = Inbox::new(&root);
+  inbox.create().unwrap();
+  let pid = home.join("pid");
+  fs::write(
+    inbox.providers_file(),
+    format!(
+      "# a provider\necho hi | agentinbox deliver --from provider; echo $$ >'{}'; exec sleep 100\n",
+      pid.display()
+    ),
+  )
+  .unwrap();
+  let _waker = waker(&home);
+  until("provided", || {
+    fs::read_to_string(&pid).is_ok_and(|p| p.ends_with('\n'))
+  });
+  assert!(inbox.oldest_untaken().unwrap().is_some());
+  let pid: i32 = fs::read_to_string(&pid).unwrap().trim().parse().unwrap();
+  let alive = || {
+    Command::new("kill")
+      .args(["-0", &pid.to_string()])
+      .status()
+      .unwrap()
+      .success()
+  };
+  assert!(alive());
+  fs::write(inbox.providers_file(), "").unwrap();
+  until("stopped", || !alive());
+  fs::remove_dir_all(&home).unwrap();
+}
