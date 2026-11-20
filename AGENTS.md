@@ -1,6 +1,9 @@
+---
+description: "The agent's inbox: its perception of everything outside it, on the agent's machine, part of Ag² (`~/dev/agentics`). Use when working on agentinbox, or on how anything reaches an agent."
+---
+
 # agentinbox
 
-The agent's inbox: its perception of everything outside it, on the agent's machine, part of Ag² (`~/dev/agentics`).
 Its own repository again since 2026-11-18, out of Vibe Together, Luis's decision: "split the inbox out. it has nothing to do with VT inherently. VT is just one user."
 Content reaches the agent's context, quiet at its next step, or waking it with a turn.
 It carries all perception from outside the agent; proprioception, the agent's perception of itself, such as its context's size or how long a step took, is the harness's, Luis's decision (2026-11-18): "let's adopt the term proprioception and understand it as harness-internal. the inbox does all perception that is external."
