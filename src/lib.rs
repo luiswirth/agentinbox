@@ -292,12 +292,22 @@ impl Inbox {
       .watch(&self.root, RecursiveMode::NonRecursive)
       .map_err(io::Error::other)?;
     while !done(self)? {
-      rx.recv()
-        .map_err(io::Error::other)?
-        .map_err(io::Error::other)?;
+      while !changes(
+        &rx
+          .recv()
+          .map_err(io::Error::other)?
+          .map_err(io::Error::other)?,
+      ) {}
     }
     Ok(())
   }
+}
+
+/// Whether an event changes a file: opening and closing one, as testing a lock or reading
+/// `resume` does, changes none, and waking at them would make every look at the inbox wake the
+/// watcher again.
+pub fn changes(event: &notify::Event) -> bool {
+  !event.kind.is_access()
 }
 
 /// Whether any open file holds a lock on `path`, tested by taking it exclusively for a moment.

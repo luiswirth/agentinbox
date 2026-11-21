@@ -39,6 +39,7 @@ pub fn run(dir: &Path) -> io::Result<()> {
   let watched = dir.clone();
   let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
     match event {
+      Ok(event) if !agentinbox::changes(&event) => {}
       Ok(event) => {
         for path in event.paths {
           let inbox = path

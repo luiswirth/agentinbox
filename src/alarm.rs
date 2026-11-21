@@ -46,20 +46,30 @@ impl Inbox {
     self.root.join("alarms")
   }
 
-  /// Sets an alarm, under a name no other alarm of the inbox has: written aside, then renamed
-  /// into place, so that the waker only ever sees whole alarms.
+  /// Sets an alarm, under a name no other alarm of the inbox has: written in `tmp/`, then renamed
+  /// into place, so that the waker only ever sees whole alarms, and sees the rename in `tmp/`,
+  /// which it watches from the inbox's start, where `alarms/` may be new.
   pub fn set_alarm(&self, alarm: &Alarm) -> io::Result<()> {
     let name = &alarm.name;
     let path = self.alarm_path(name)?;
     self.create()?;
     let alarms = self.alarms_dir();
+    fs::DirBuilder::new()
+      .mode(0o700)
+      .create(&alarms)
+      .or_else(|e| match e.kind() {
+        io::ErrorKind::AlreadyExists => Ok(()),
+        _ => Err(at(e, &alarms)),
+      })?;
     if path.exists() {
       return Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
         format!("there is an alarm `{name}` already"),
       ));
     }
-    let tmp = alarms.join(format!(".{name}.{}", std::process::id()));
+    let tmp = self
+      .tmp_dir()
+      .join(format!(".alarm.{name}.{}", std::process::id()));
     fs::DirBuilder::new()
       .recursive(true)
       .mode(0o700)
@@ -158,11 +168,12 @@ impl Inbox {
   }
 
   /// Dismisses the alarm: whether it was set, so that of concurrent dismissers exactly one does.
-  /// It is renamed aside first, so that it goes at once and whole.
+  /// It is renamed into `tmp/` first, so that it goes at once and whole.
   pub fn dismiss_alarm(&self, name: &str) -> io::Result<bool> {
     let path = self.alarm_path(name)?;
-    let alarms = self.alarms_dir();
-    let aside = alarms.join(format!(".{name}.dismissed.{}", std::process::id()));
+    let aside = self
+      .tmp_dir()
+      .join(format!(".alarm.{name}.dismissed.{}", std::process::id()));
     match fs::rename(&path, &aside) {
       Ok(()) => fs::remove_dir_all(&aside).map_err(|e| at(e, &aside))?,
       Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
