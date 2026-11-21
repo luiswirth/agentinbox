@@ -24,6 +24,11 @@ Of the three ways content gets in, always (such as `AGENTS.md`), pulled (read by
   - One waker per machine, `agentinbox waker`, watches every inbox under `~/.agents/inbox/` and answers a ring only while the agent is offline, by running `resume` while something is untaken, holding `awake` meanwhile; a ring while a mind is awake or asleep is that mind's, a run that fails or takes nothing in ends the answer, so a broken command never loops. Without the asleep lock, it would resume an idle interactive session in a second process on the same transcript.
   - An event provider that serves every agent, such as Vibe Together, runs once per machine over all the inboxes, as the waker does, Luis (2026-11-19): "One listener per machine"; each inbox names its agent there in a file of the provider's, such as `vibetogether`.
   - An agent that won't come back removes its inbox.
+- Alarms are Hivemind's, built back into the inbox, Luis (2026-11-21): "the inbox should support the same functionality in spirit that alarms provided. have it be built."
+  An alarm is a command that waits and a note, the inbox's directory `alarms/<name>/`, so it outlasts restarts; anyone sets one for any agent, `agentinbox alarm set`, `list` and `dismiss`.
+  The waker runs each alarm's command, in a process group of its own, and once it ends delivers the note from `alarm`, proposing a ring; a once alarm is then dismissed, a repeating one runs again, and one that fails is told and dismissed, so a broken command never loops.
+  Its command runs again whenever the waker starts again, so it only waits, and a time is absolute: `--at` and `--in` are `agentinbox until <time>`.
+  Stopping the waker stops the commands and keeps the alarms.
 - The inbox is `~/.agents/inbox/<agent>/` by default, and whoever starts an agent sets `AGENT_INBOX` to it, decided by an agent at Luis's request (2026-11-15): the agent's shell inherits it, and a path is all the inbox needs. Without it, nothing is taken in.
 - The crate `agentinbox` holds it, and its command line `agentinbox`, whose `--help` documents it: `deliver`, `ring`, `take`, `wait`, `awake`, `asleep`, `waker` and `send`.
 
