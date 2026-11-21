@@ -3,10 +3,11 @@
 # PostToolUse (settings.json).
 #
 # The inbox is AGENT_INBOX where the session was started with one, else
-# ~/.agents/inbox/claude-code-<session id>, made at the session's start. At its start, the
-# session's commands get AGENT_INBOX, the inbox gets a `resume` that brings the session back where
-# it has none, and the session holds the asleep lock for as long as its process lives, so that the
-# machine's waker leaves its rings to it. At each prompt and after each tool call, what is new is
+# ~/.agents/inbox/claude-code-<session id>, made at the session's start, and the outbox is
+# AGENT_OUTBOX, else ~/.agents/outbox/<the inbox's name>. At its start, the session's commands get
+# both, the inbox gets a `resume` that brings the session back where it has none, and the session
+# holds the asleep lock for as long as its process lives, so that the machine's waker leaves its
+# rings to it. At each prompt and after each tool call, what is new is
 # taken in.
 
 set -eu
@@ -17,12 +18,13 @@ event=$(field hook_event_name)
 session=$(field session_id)
 [ -n "$session" ] || exit 0
 inbox=${AGENT_INBOX:-$HOME/.agents/inbox/claude-code-$session}
+outbox=${AGENT_OUTBOX:-$HOME/.agents/outbox/$(basename "$inbox")}
 export AGENT_INBOX="$inbox"
 
 case "$event" in
 SessionStart)
   [ -z "${CLAUDE_ENV_FILE:-}" ] ||
-    printf 'export AGENT_INBOX=%s\n' "'$inbox'" >>"$CLAUDE_ENV_FILE"
+    printf 'export AGENT_INBOX=%s AGENT_OUTBOX=%s\n' "'$inbox'" "'$outbox'" >>"$CLAUDE_ENV_FILE"
   (umask 077 && mkdir -p "$inbox/new" "$inbox/cur" "$inbox/tmp")
   cwd=$(field cwd)
   # A session's first start, unless whoever started it wrote its own.

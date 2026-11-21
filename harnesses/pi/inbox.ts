@@ -2,12 +2,12 @@
 // awake lock while a run lasts and the asleep lock while an interactive session is open.
 // The inbox is AGENT_INBOX where pi was started with one, else ~/.agents/inbox/pi-<session id>,
 // made at the session's start, which then gets a `resume` that brings the session back where it
-// has none; the resume finds this extension installed where pi loads it for every session.
+// has none, and the outbox is AGENT_OUTBOX, else ~/.agents/outbox/<the inbox's name>; the resume finds this extension installed where pi loads it for every session.
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const customType = "inbox";
@@ -114,6 +114,12 @@ export default function (pi: ExtensionAPI) {
 			);
 			process.env.AGENT_INBOX = inbox;
 		}
+		process.env.AGENT_OUTBOX ??= join(
+			homedir(),
+			".agents",
+			"outbox",
+			basename(inbox),
+		);
 		for (const dir of ["new", "cur", "tmp"])
 			mkdirSync(join(inbox, dir), { recursive: true, mode: 0o700 });
 		const file = session.getSessionFile();
