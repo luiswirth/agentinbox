@@ -3,7 +3,8 @@
 //! `new/` holds the items not yet taken in, `cur/` the taken ones, `tmp/` the ones being written,
 //! the file `wake` is the doorbell, a lock on the file `awake` says the agent is in a turn, and a
 //! lock on the file `asleep` says that a mind of it waits and will wake itself. The file `resume`
-//! holds the command that brings the agent's mind back, which the machine's waker runs.
+//! holds the command that brings the agent's mind back, which the machine's waker runs. The
+//! directory `alarms/` holds the alarms (`Alarm`), which the waker also runs.
 //!
 //! An item is one file, named `<time>.<sender>.<ext>`, such as `20261115T153012.123456Z.luis.md`,
 //! with the time in UTC to the microsecond, so that the names sort by time, and the sender
@@ -29,6 +30,9 @@ use std::{
 
 use jiff::{Timestamp, civil::DateTime, tz::TimeZone};
 use notify::{RecursiveMode, Watcher};
+
+mod alarm;
+pub use alarm::Alarm;
 
 const TIME_FORMAT: &str = "%Y%m%dT%H%M%S.%6fZ";
 const TIME_LEN: usize = "20261115T153012.123456Z".len();

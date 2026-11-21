@@ -7,7 +7,8 @@ use std::{
   process::{Command as Process, ExitCode, Stdio},
 };
 
-use agentinbox::{Inbox, Outbox, extension};
+use agentinbox::{Alarm, Inbox, Outbox, extension};
+use jiff::{Span, Timestamp, Zoned, civil::DateTime, tz::TimeZone};
 
 mod waker;
 use clap::{Parser, Subcommand};
@@ -100,6 +101,17 @@ enum Command {
   /// A harness starts it with a pipe at a turn's start and closes the pipe at its end; if the
   /// harness dies, the pipe closes and the lock goes with it.
   Awake,
+  /// The alarms: a command that waits, and a note, delivered once the command ends.
+  #[command(subcommand)]
+  Alarm(AlarmCommand),
+  /// Blocks until a time, such as `2026-11-22 09:00` in the system's time zone, or
+  /// `2026-11-22T08:00:00Z`; at once where it has passed.
+  ///
+  /// It checks the clock at least every 30 seconds, so a machine that slept wakes it in time.
+  Until {
+    /// The time.
+    time: String,
+  },
   /// Writes one item, read from stdin, into the outbox, for a recipient, such as
   /// `telegram:luis`.
   ///
@@ -113,6 +125,52 @@ enum Command {
     /// Its type, as a MIME type (`image/png`) or an extension (`png`).
     #[arg(long = "type", default_value = "md")]
     ty: String,
+  },
+}
+
+#[derive(Subcommand)]
+enum AlarmCommand {
+  /// Sets an alarm: the machine's waker runs its command, and once the command ends, delivers
+  /// the note into the inbox, from `alarm`, proposing to ring.
+  ///
+  /// The command only waits, since it runs again whenever the waker starts again; a condition to
+  /// poll is a loop, such as `until check; do sleep 60; done`. It runs with `sh -c`, in the
+  /// directory this is run in, with `AGENT_INBOX`. An alarm is dismissed once it went off, a
+  /// repeating one only once its command fails, and a failing command is told as such. A command
+  /// killed by a signal keeps its alarm, which runs again as the waker starts again. Anyone may
+  /// set an alarm for
+  /// any agent, with `--inbox`. A command that is no wait, such as a long build, runs in the
+  /// background and delivers its own end:
+  /// `setsid sh -c 'cargo build >log 2>&1; echo "ended: $?" | agentinbox deliver --wake' &`.
+  Set {
+    /// The command that waits.
+    #[arg(required_unless_present_any = ["at", "within"], conflicts_with_all = ["at", "within"])]
+    command: Option<String>,
+    /// Waits until a time, as `until` takes it.
+    #[arg(long, conflicts_with = "within")]
+    at: Option<String>,
+    /// Waits for a span of time, such as `90m` or `1h 30m`, from now.
+    #[arg(long = "in")]
+    within: Option<String>,
+    /// What the agent is told.
+    #[arg(long, default_value = "")]
+    note: String,
+    /// Its name, by default the time it is set.
+    #[arg(long)]
+    name: Option<String>,
+    /// Who sets it, by default the name of the inbox in `AGENT_INBOX`.
+    #[arg(long)]
+    by: Option<String>,
+    /// Runs the command again after each time it goes off, until dismissed or it fails.
+    #[arg(long, conflicts_with_all = ["at", "within"])]
+    repeat: bool,
+  },
+  /// Lists the alarms set.
+  List,
+  /// Dismisses an alarm, stopping its command.
+  Dismiss {
+    /// Its name.
+    name: String,
   },
 }
 
@@ -140,6 +198,9 @@ fn run(cli: Cli) -> io::Result<()> {
   };
   if let Command::Waker { dir } = &cli.command {
     return waker::run(dir);
+  }
+  if let Command::Until { time } = &cli.command {
+    return until(time_from(time)?);
   }
   if let Command::Send { recipient, ty } = &cli.command {
     let root = cli
@@ -185,9 +246,113 @@ fn run(cli: Cli) -> io::Result<()> {
         }
       }
     }
-    Command::Send { .. } | Command::Waker { .. } => unreachable!("handled above"),
+    Command::Alarm(command) => alarm(&inbox, command)?,
+    Command::Send { .. } | Command::Waker { .. } | Command::Until { .. } => {
+      unreachable!("handled above")
+    }
   }
   Ok(())
+}
+
+fn invalid(what: String) -> io::Error {
+  io::Error::new(io::ErrorKind::InvalidInput, what)
+}
+
+fn alarm(inbox: &Inbox, command: AlarmCommand) -> io::Result<()> {
+  match command {
+    AlarmCommand::Set {
+      command,
+      at,
+      within,
+      note,
+      name,
+      by,
+      repeat,
+    } => {
+      let command = match (command, at, within) {
+        (Some(command), ..) => command,
+        (_, Some(at), _) => until_command(time_from(&at)?),
+        (_, _, Some(within)) => {
+          let span: Span = within
+            .parse()
+            .map_err(|e| invalid(format!("`{within}` is no span of time: {e}")))?;
+          let time = Zoned::now()
+            .checked_add(span)
+            .map_err(|e| invalid(format!("`{within}` from now: {e}")))?;
+          until_command(time.timestamp())
+        }
+        _ => unreachable!("clap requires one"),
+      };
+      let by = by.unwrap_or_else(|| {
+        env::var_os("AGENT_INBOX")
+          .and_then(|own| PathBuf::from(own).file_name().map(|n| n.to_owned()))
+          .map(|n| n.to_string_lossy().into_owned())
+          .unwrap_or_else(|| "unknown".to_string())
+      });
+      let name =
+        name.unwrap_or_else(|| Timestamp::now().strftime("%Y%m%dT%H%M%S.%6fZ").to_string());
+      inbox.set_alarm(&Alarm {
+        name: name.clone(),
+        command,
+        dir: env::current_dir()?,
+        note,
+        by,
+        repeat,
+      })?;
+      println!("{name}");
+    }
+    AlarmCommand::List => {
+      let mut out = io::stdout().lock();
+      for alarm in inbox.alarms()? {
+        let repeat = if alarm.repeat { ", repeating" } else { "" };
+        writeln!(
+          out,
+          "{}, set by {}{repeat}: {}",
+          alarm.name, alarm.by, alarm.command
+        )?;
+        for line in alarm.note.lines() {
+          writeln!(out, "  {line}")?;
+        }
+      }
+    }
+    AlarmCommand::Dismiss { name } => {
+      if !inbox.dismiss_alarm(&name)? {
+        return Err(invalid(format!("there is no alarm `{name}`")));
+      }
+    }
+  }
+  Ok(())
+}
+
+/// The command that waits until the time: absolute, so that it waits for the same time when it
+/// runs again after a restart.
+fn until_command(time: Timestamp) -> String {
+  format!("agentinbox until {time}")
+}
+
+/// A time, as an instant such as `2026-11-22T08:00:00Z`, or a civil time in the system's time
+/// zone, such as `2026-11-22 09:00`.
+fn time_from(text: &str) -> io::Result<Timestamp> {
+  if let Ok(time) = text.parse::<Timestamp>() {
+    return Ok(time);
+  }
+  text
+    .parse::<DateTime>()
+    .and_then(|civil| civil.to_zoned(TimeZone::system()))
+    .map(|zoned| zoned.timestamp())
+    .map_err(|e| invalid(format!("`{text}` is no time: {e}")))
+}
+
+/// Blocks until the time, by the clock, which a machine's sleep does not stop.
+fn until(time: Timestamp) -> io::Result<()> {
+  loop {
+    let left = Timestamp::now().duration_until(time);
+    if left.is_negative() || left.is_zero() {
+      return Ok(());
+    }
+    let left = left.unsigned_abs().min(std::time::Duration::from_secs(30));
+    std::thread::sleep(left);
+  }
 }
 
 /// The inboxes' directory by convention, `~/.agents/inbox/`.
