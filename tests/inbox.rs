@@ -284,3 +284,15 @@ fn a_ring_stays_until_one_answers_it() {
   assert!(inbox.unring().unwrap());
   assert!(!inbox.unring().unwrap());
 }
+
+#[test]
+fn a_status_is_one_line_and_an_empty_one_clears_it() {
+  let inbox = inbox("status");
+  assert!(inbox.status().unwrap().is_none());
+  inbox.set_status("  building\n alarms ").unwrap();
+  assert_eq!(inbox.status().unwrap().unwrap().text, "building alarms");
+  inbox.set_status("\n").unwrap();
+  assert!(inbox.status().unwrap().is_none());
+  inbox.set_status("").unwrap();
+  assert_eq!(inbox.presence().unwrap(), agentinbox::Presence::Offline);
+}

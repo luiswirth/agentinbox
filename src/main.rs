@@ -7,7 +7,7 @@ use std::{
   process::{Command as Process, ExitCode, Stdio},
 };
 
-use agentinbox::{Alarm, Inbox, Outbox, extension};
+use agentinbox::{Alarm, Inbox, Outbox, extension, inboxes};
 use jiff::{Span, Timestamp, Zoned, civil::DateTime, tz::TimeZone};
 
 mod waker;
@@ -104,6 +104,23 @@ enum Command {
   /// The alarms: a command that waits, and a note, delivered once the command ends.
   #[command(subcommand)]
   Alarm(AlarmCommand),
+  /// Sets the agent's status, one line on what it is doing and where, which others see; prints
+  /// it where no text is given, and clears it where the text is empty.
+  ///
+  /// It lasts until the next. Anyone may set any agent's, with `--inbox`.
+  Status {
+    /// The status.
+    text: Option<String>,
+  },
+  /// Lists the machine's agents, one per inbox: each one's presence and status.
+  ///
+  /// Awake is in a turn, asleep a mind that waits and wakes itself, offline neither, which the
+  /// waker brings back as its bell rings.
+  Agents {
+    /// The directory of the inboxes.
+    #[arg(default_value_os_t = default_inboxes())]
+    dir: PathBuf,
+  },
   /// Blocks until a time, such as `2026-11-22 09:00` in the system's time zone, or
   /// `2026-11-22T08:00:00Z`; at once where it has passed.
   ///
@@ -199,6 +216,23 @@ fn run(cli: Cli) -> io::Result<()> {
   if let Command::Waker { dir } = &cli.command {
     return waker::run(dir);
   }
+  if let Command::Agents { dir } = &cli.command {
+    let mut out = io::stdout().lock();
+    for inbox in inboxes(dir)? {
+      let presence = inbox.presence()?.name();
+      match inbox.status()? {
+        Some(status) => writeln!(
+          out,
+          "{} ({presence}, set {}): {}",
+          inbox.name(),
+          local(status.set),
+          status.text
+        )?,
+        None => writeln!(out, "{} ({presence})", inbox.name())?,
+      }
+    }
+    return Ok(());
+  }
   if let Command::Until { time } = &cli.command {
     return until(time_from(time)?);
   }
@@ -247,11 +281,29 @@ fn run(cli: Cli) -> io::Result<()> {
       }
     }
     Command::Alarm(command) => alarm(&inbox, command)?,
-    Command::Send { .. } | Command::Waker { .. } | Command::Until { .. } => {
+    Command::Status { text: Some(text) } => inbox.set_status(&text)?,
+    Command::Status { text: None } => {
+      if let Some(status) = inbox.status()? {
+        println!("{}", status.text);
+      }
+    }
+    Command::Send { .. }
+    | Command::Waker { .. }
+    | Command::Until { .. }
+    | Command::Agents { .. } => {
       unreachable!("handled above")
     }
   }
   Ok(())
+}
+
+/// A time as the user reads it, in the system's time zone, to the minute.
+fn local(time: std::time::SystemTime) -> String {
+  Timestamp::try_from(time)
+    .unwrap_or_default()
+    .to_zoned(TimeZone::system())
+    .strftime("%Y-%m-%d %H:%M")
+    .to_string()
 }
 
 fn invalid(what: String) -> io::Error {

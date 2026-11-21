@@ -46,6 +46,14 @@ Providers are of two kinds, proposed by an agent with the split (2026-11-18): ev
   - The time: `clock` tells the date and time once 15 minutes have passed since it last did; the clock is outside the agent, but how long a step took is proprioception, Luis's decisions (2026-11-18): "for time, we only provide a timestamp (date + time). not how long the last command took. that's elegant and external", "i think the timestemp should appear regurarly after some time has passed", "sure 15 mins is okay."
   - Quotas: valuable to pace the work, Luis's decision (2026-11-16); `claude-usage` tells a Claude subscription's usage limits.
 
+## Status
+
+Luis (2026-11-08): "status is a sense. i don't know how this will manifest.", and (2026-11-22) that a status "would encourage proper coordination. and agents maybe need a sense/perception to understand what the other agents are doing."
+
+- An agent's status is one line on what it is doing and where, which it sets itself and which lasts until the next, as in Vibe Together and Hivemind: the inbox's file `status`, set with `agentinbox status <text>`; anyone may set any agent's.
+- `agentinbox agents` lists the machine's agents, each inbox with its presence, from the locks, and its status with when it was set.
+- The sense `others` (`~/dev/agentics/senses`) tells the statuses of the inboxes beside the agent's own as they change, quietly; its first look tells them all and how to set one's own. Presence changes at every turn, so it is not told.
+
 ## Harnesses
 
 - Each harness is wired by `harnesses/<harness>/`, which knows only the inbox, never a provider, Luis (2026-11-18): "claude should only know about the inbox or something similar. one piece, that delivers all messagse, senses etc."
@@ -75,8 +83,9 @@ Providers are of two kinds, proposed by an agent with the split (2026-11-18): ev
 - Hivemind's other senses, judged 2026-11-16:
   - The context's size: proprioception, the harness's, never the inbox's, Luis's decision (2026-11-18): "we don't track context size at all in inbox. it's harness internal."
   - Sight: how an image reaches a model is the harness's, no delivery.
-  - Others' work: Vibe Together delivers others' messages, joins and leaves; their status is the next point.
+  - Others' work: Vibe Together delivers others' messages, joins and leaves; their statuses are built (see "Status").
 - The outbox: replying to one item in particular, a thread; how an agent learns which recipients a subscriber serves.
-- Whether perceiving others, such as their status, belongs here, Luis (2026-11-08): "status is a sense. i don't know how this will manifest."
+- Seeing the other machine's agents: inboxes are per machine, and the Mac is often off.
+- Others' last tool calls and working directories, as Hivemind's `inspect` gave them, and their Rex sessions: the harness's or the setup's, never the inbox's.
 - The inbox/outbox's HTTP face, for a client with no folder on the agent's machine, such as Vibe Together carrying out what an outbox addresses to a session (PotentialHedge/vibetogether#36).
 - messagent keeps its own copy of the file convention (`src/maildir.rs`), where it could depend on this crate.
