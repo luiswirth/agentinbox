@@ -38,6 +38,28 @@ export default function (pi: ExtensionAPI) {
 		return result.stdout;
 	}
 
+	// What was steered into a run and not yet delivered: pi drops queued steers when the user
+	// aborts the run, but the take has already moved them to cur/, so they go into the session
+	// once it settles, quietly, without starting a turn the user just stopped.
+	const steered: string[] = [];
+	function steer(content: string, triggerTurn = false) {
+		steered.push(content);
+		pi.sendMessage(
+			{ customType, content, display: true },
+			{ deliverAs: "steer", triggerTurn },
+		);
+	}
+	pi.on("message_end", (event) => {
+		const message = event.message;
+		if (message.role !== "custom" || message.customType !== customType) return;
+		const i = steered.indexOf(message.content as string);
+		if (i >= 0) steered.splice(i, 1);
+	});
+	pi.on("agent_settled", () => {
+		for (const content of steered.splice(0))
+			pi.sendMessage({ customType, content, display: true });
+	});
+
 	pi.on("before_agent_start", async () => {
 		const content = await take();
 		if (content) return { message: { customType, content, display: true } };
@@ -46,11 +68,7 @@ export default function (pi: ExtensionAPI) {
 	// While the agent streams, a steer lands before its next model call.
 	pi.on("tool_execution_end", async () => {
 		const content = await take();
-		if (content)
-			pi.sendMessage(
-				{ customType, content, display: true },
-				{ deliverAs: "steer" },
-			);
+		if (content) steer(content);
 	});
 
 	// The wait runs for the whole session. A ring while the agent is busy steers what is new into its run;
@@ -75,11 +93,7 @@ export default function (pi: ExtensionAPI) {
 			if (fresh && current?.isIdle()) {
 				wake = content;
 				pi.sendUserMessage(`/${freshCommand}`, { expandPromptTemplates: true });
-			} else
-				pi.sendMessage(
-					{ customType, content, display: true },
-					{ deliverAs: "steer", triggerTurn: true },
-				);
+			} else steer(content, true);
 			wait();
 		});
 	}
