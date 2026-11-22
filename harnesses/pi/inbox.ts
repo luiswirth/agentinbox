@@ -3,12 +3,17 @@
 // The inbox is AGENT_INBOX where pi was started with one, else ~/.agents/inbox/pi-<session id>,
 // made at the session's start, which then gets a `resume` that brings the session back where it
 // has none, and the outbox is AGENT_OUTBOX, else ~/.agents/outbox/<the inbox's name>; the resume finds this extension installed where pi loads it for every session.
+// Where pi was started with AGENT_FRESH=1, each wake starts a new session, so every wake is a
+// fresh mind's.
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 const customType = "inbox";
 
@@ -16,6 +21,9 @@ const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 
 export default function (pi: ExtensionAPI) {
 	let inbox = process.env.AGENT_INBOX;
+	const fresh = process.env.AGENT_FRESH === "1";
+	// The session's context, current across a replacement of the session.
+	let current: ExtensionContext | undefined;
 
 	async function take(): Promise<string> {
 		if (!inbox) return "";
@@ -55,13 +63,45 @@ export default function (pi: ExtensionAPI) {
 			if (stopped || code !== 0) return;
 			const content =
 				(await take()) || "The inbox bell rang, with nothing new.";
-			pi.sendMessage(
-				{ customType, content, display: true },
-				{ deliverAs: "steer", triggerTurn: true },
-			);
+			if (fresh && current?.isIdle()) {
+				wake = content;
+				pi.sendUserMessage(`/${freshCommand}`, { expandPromptTemplates: true });
+			} else
+				pi.sendMessage(
+					{ customType, content, display: true },
+					{ deliverAs: "steer", triggerTurn: true },
+				);
 			wait();
 		});
 	}
+
+	// A fresh mind's wake: what the bell brought starts a new session, unless this one has no
+	// message yet. Only a command may replace the session.
+	const freshCommand = "inbox-wake-fresh";
+	let wake: string | undefined;
+	pi.registerCommand(freshCommand, {
+		description:
+			"Starts a new session with what the inbox bell brought: a fresh mind's wake",
+		handler: async (_args, ctx) => {
+			const content = wake;
+			wake = undefined;
+			if (content === undefined) return;
+			const message = { customType, content, display: true };
+			if (
+				!ctx.sessionManager
+					.getBranch()
+					.some((entry) => entry.type === "message")
+			) {
+				pi.sendMessage(message, { triggerTurn: true });
+				return;
+			}
+			await ctx.newSession({
+				withSession: async (ctx) => {
+					await ctx.sendMessage(message, { triggerTurn: true });
+				},
+			});
+		},
+	});
 
 	// The agent is awake from the start of a run until it has settled, retries and continuations included.
 	// The lock lives in a child that holds it until its stdin closes, so it goes when pi dies too.
@@ -103,6 +143,9 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		current = ctx;
+		// A replaced session starts again what the old one's end stopped.
+		stopped = false;
 		oneShot = ctx.mode === "print" || ctx.mode === "json";
 		const session = ctx.sessionManager;
 		if (!inbox) {
