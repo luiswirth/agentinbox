@@ -5,7 +5,8 @@
 //! lock on the file `asleep` says that a mind of it waits and will wake itself. The file `resume`
 //! holds the command that brings the agent's mind back, which the machine's waker runs. The
 //! directory `alarms/` holds the alarms (`Alarm`), which the waker also runs, and the file
-//! `status` the agent's status (`Status`), what others see of it.
+//! `status` the agent's status (`Status`), what others see of it. Other machines' agents are
+//! seen through the peers (`peers`).
 //!
 //! An item is one file, named `<time>.<sender>.<ext>`, such as `20261115T153012.123456Z.luis.md`,
 //! with the time in UTC to the microsecond, so that the names sort by time, and the sender
@@ -33,6 +34,7 @@ use jiff::{Timestamp, civil::DateTime, tz::TimeZone};
 use notify::{RecursiveMode, Watcher};
 
 mod alarm;
+pub mod peers;
 mod status;
 pub use alarm::Alarm;
 pub use status::{Presence, Status, inboxes};

@@ -51,8 +51,11 @@ Providers are of two kinds, proposed by an agent with the split (2026-11-18): ev
 Luis (2026-11-08): "status is a sense. i don't know how this will manifest.", and (2026-11-22) that a status "would encourage proper coordination. and agents maybe need a sense/perception to understand what the other agents are doing."
 
 - An agent's status is one line on what it is doing and where, which it sets itself and which lasts until the next, as in Vibe Together and Hivemind: the inbox's file `status`, set with `agentinbox status <text>`; anyone may set any agent's.
-- `agentinbox agents` lists the machine's agents, each inbox with its presence, from the locks, and its status with when it was set.
-- The sense `others` (`~/dev/agentics/senses`) tells the statuses of the inboxes beside the agent's own as they change, quietly; its first look tells them all and how to set one's own. Presence changes at every turn, so it is not told.
+- `agentinbox agents` lists the agents of the machine and of its peers, each inbox with its presence, from the locks, and its status with when it was set.
+- Inboxes are per machine, so other machines' agents are seen through the peers, Luis (2026-11-22): "`peers` sounds reasonable".
+  A peer is a line `<name> <command>` of `agentinbox/peers` in the user's config directory, whose command lists its agents, such as `ssh <host> agentinbox agents --here --porcelain`, so the inbox knows no machine; its agents are `<peer>:<agent>`.
+  What a peer listed last is cached, in `agentinbox/peers/` of the user's cache directory, and asked again once a look finds it older than the looker's while, five minutes for `others`, now for `agents`; a peer out of reach keeps what it listed last.
+- The sense `others` (`~/dev/agentics/senses`) tells the statuses of the inboxes beside the agent's own, and of the peers' agents, as they change, quietly; its first look tells them all and how to set one's own. Presence changes at every turn, so it is not told.
 
 ## Harnesses
 
@@ -85,7 +88,6 @@ Luis (2026-11-08): "status is a sense. i don't know how this will manifest.", an
   - Sight: how an image reaches a model is the harness's, no delivery.
   - Others' work: Vibe Together delivers others' messages, joins and leaves; their statuses are built (see "Status").
 - The outbox: replying to one item in particular, a thread; how an agent learns which recipients a subscriber serves.
-- Seeing the other machine's agents: inboxes are per machine, and the Mac is often off.
 - Others' last tool calls and working directories, as Hivemind's `inspect` gave them, and their Rex sessions: the harness's or the setup's, never the inbox's.
 - The inbox/outbox's HTTP face, for a client with no folder on the agent's machine, such as Vibe Together carrying out what an outbox addresses to a session (PotentialHedge/vibetogether#36).
 - messagent keeps its own copy of the file convention (`src/maildir.rs`), where it could depend on this crate.

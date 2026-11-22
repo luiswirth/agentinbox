@@ -3,11 +3,12 @@
 use std::{
   env, fs,
   io::{self, Write},
-  path::PathBuf,
+  path::{Path, PathBuf},
   process::{Command as Process, ExitCode, Stdio},
+  time::Duration,
 };
 
-use agentinbox::{Alarm, Inbox, Outbox, extension, inboxes};
+use agentinbox::{Alarm, Inbox, Outbox, extension, peers};
 use jiff::{Span, Timestamp, Zoned, civil::DateTime, tz::TimeZone};
 
 mod waker;
@@ -112,14 +113,25 @@ enum Command {
     /// The status.
     text: Option<String>,
   },
-  /// Lists the machine's agents, one per inbox: each one's presence and status.
+  /// Lists the agents, one per inbox, of this machine and of its peers: each one's presence and
+  /// status.
   ///
   /// Awake is in a turn, asleep a mind that waits and wakes itself, offline neither, which the
-  /// waker brings back as its bell rings.
+  /// waker brings back as its bell rings. A peer is another machine, a line `<name> <command>`
+  /// of `agentinbox/peers` in the user's config directory, whose command lists its agents, such
+  /// as over ssh with `agentinbox agents --here --porcelain`; its agents are `<peer>:<agent>`,
+  /// and a peer out of reach is listed as such.
   Agents {
     /// The directory of the inboxes.
     #[arg(default_value_os_t = default_inboxes())]
     dir: PathBuf,
+    /// Only this machine's agents.
+    #[arg(long)]
+    here: bool,
+    /// One line per agent for programs: name, presence, the time its status was set in seconds
+    /// since the epoch, and the status, separated by tabs.
+    #[arg(long)]
+    porcelain: bool,
   },
   /// Blocks until a time, such as `2026-11-22 09:00` in the system's time zone, or
   /// `2026-11-22T08:00:00Z`; at once where it has passed.
@@ -216,22 +228,13 @@ fn run(cli: Cli) -> io::Result<()> {
   if let Command::Waker { dir } = &cli.command {
     return waker::run(dir);
   }
-  if let Command::Agents { dir } = &cli.command {
-    let mut out = io::stdout().lock();
-    for inbox in inboxes(dir)? {
-      let presence = inbox.presence()?.name();
-      match inbox.status()? {
-        Some(status) => writeln!(
-          out,
-          "{} ({presence}, set {}): {}",
-          inbox.name(),
-          local(status.set),
-          status.text
-        )?,
-        None => writeln!(out, "{} ({presence})", inbox.name())?,
-      }
-    }
-    return Ok(());
+  if let Command::Agents {
+    dir,
+    here,
+    porcelain,
+  } = &cli.command
+  {
+    return agents(dir, *here, *porcelain);
   }
   if let Command::Until { time } = &cli.command {
     return until(time_from(time)?);
@@ -417,10 +420,43 @@ fn default_inboxes() -> PathBuf {
 
 /// The file that lists the readings: `agentinbox/readings` in the user's config directory.
 fn readings_file() -> Option<PathBuf> {
-  env::var_os("XDG_CONFIG_HOME")
-    .map(PathBuf::from)
-    .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-    .map(|config| config.join("agentinbox/readings"))
+  peers::config_dir().map(|config| config.join("agentinbox/readings"))
+}
+
+/// Lists the agents of this machine, and of its peers, asked now, unless `here`.
+fn agents(dir: &Path, here: bool, porcelain: bool) -> io::Result<()> {
+  let mut out = io::stdout().lock();
+  let line = |out: &mut io::StdoutLock, agent: &peers::Agent| -> io::Result<()> {
+    if porcelain {
+      return writeln!(out, "{}", agent.porcelain());
+    }
+    match &agent.status {
+      Some((text, set)) => writeln!(
+        out,
+        "{} ({}, set {}): {text}",
+        agent.name,
+        agent.presence,
+        local(*set)
+      ),
+      None => writeln!(out, "{} ({})", agent.name, agent.presence),
+    }
+  };
+  for agent in peers::here(dir)? {
+    line(&mut out, &agent)?;
+  }
+  if here {
+    return Ok(());
+  }
+  for peer in peers::peers(Duration::ZERO)? {
+    if peer.reachable {
+      for agent in &peer.agents {
+        line(&mut out, agent)?;
+      }
+    } else {
+      eprintln!("agentinbox: the peer {} is out of reach", peer.name);
+    }
+  }
+  Ok(())
 }
 
 /// Runs each reading, so that what it delivers is taken in the same step. A reading that fails,
