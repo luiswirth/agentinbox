@@ -3,11 +3,18 @@
 // The inbox is AGENT_INBOX where pi was started with one, else ~/.agents/inbox/pi-<session id>,
 // made at the session's start, which then gets a `resume` that brings the session back where it
 // has none, and the outbox is AGENT_OUTBOX, else ~/.agents/outbox/<the inbox's name>; the resume finds this extension installed where pi loads it for every session.
-// Where pi was started with AGENT_FRESH=1, each wake starts a new session, so every wake is a
-// fresh mind's.
+// A ring with the file `fresh` in the inbox starts a new session, a fresh mind's, where the
+// agent is idle; a busy agent takes it in its run, so the file only goes.
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type {
@@ -21,7 +28,6 @@ const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 
 export default function (pi: ExtensionAPI) {
 	let inbox = process.env.AGENT_INBOX;
-	const fresh = process.env.AGENT_FRESH === "1";
 	// The session's context, current across a replacement of the session.
 	let current: ExtensionContext | undefined;
 
@@ -61,6 +67,9 @@ export default function (pi: ExtensionAPI) {
 		waiter.on("exit", async (code) => {
 			waiter = undefined;
 			if (stopped || code !== 0) return;
+			const marker = join(inbox, "fresh");
+			const fresh = existsSync(marker);
+			rmSync(marker, { force: true });
 			const content =
 				(await take()) || "The inbox bell rang, with nothing new.";
 			if (fresh && current?.isIdle()) {
