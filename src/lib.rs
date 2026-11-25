@@ -600,8 +600,9 @@ fn read_item(path: PathBuf) -> io::Result<Item> {
   })
 }
 
-/// An item's name read: its time, its sender or recipient, and its extension.
-fn parse_name(name: &str) -> Option<(Timestamp, String, String)> {
+/// An item's name read: its time, its sender or recipient, and its extension; `None` for a
+/// name that is no item's.
+pub fn parse_name(name: &str) -> Option<(Timestamp, String, String)> {
   let time = name.get(..TIME_LEN)?;
   let rest = name.get(TIME_LEN..)?.strip_prefix('.')?;
   let (sender, ext) = rest.split_once('.')?;
