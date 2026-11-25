@@ -63,7 +63,7 @@ enum Command {
     #[arg(long, env = "MINDIO_KIND", default_value = "event", value_parser = ["event", "reading"])]
     kind: String,
     /// A fact about it, as `<name>=<value>`, which waking rules can match, such as
-    /// `session=hive`.
+    /// `session=hive`; repeated, also with one name, a rule's field matches any of them.
     #[arg(long = "field", value_parser = field)]
     fields: Vec<(String, String)>,
   },

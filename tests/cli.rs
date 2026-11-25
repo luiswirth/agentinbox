@@ -31,7 +31,8 @@ fn mindio(home: &Path, args: &[&str]) -> Command {
 fn until(what: &str, check: impl Fn() -> bool) {
   let start = Instant::now();
   while !check() {
-    assert!(start.elapsed() < Duration::from_secs(10), "never {what}");
+    // Generous: a nix build runs the tests under load.
+    assert!(start.elapsed() < Duration::from_secs(60), "never {what}");
     thread::sleep(Duration::from_millis(20));
   }
 }
