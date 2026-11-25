@@ -52,6 +52,7 @@ Luis: "Mind I O sollte es möglich machen, für jeden Agent selber komplett cust
   So an agent that sets nothing is woken by every event: never being woken is the worst case, and a needless wake costs little, since the mind ends that turn at once.
 - A harness gives a new session `mindio brief`, so every agent knows its IO and that its waking is its own.
 - Waking uses filesystem notifications, never polling.
+- To come, Luis's decision (2026-11-25), for a seamless real-time exchange: a third verdict, `interrupt`, beside `quiet` and `wake`, which cuts the running step off, keeps the reply as far as it got, and continues with the input at once; and outbox items that stream, growing as the agent writes them. Luis: "hah! mind/input interrupts (like hardware). i love it." Both in the harness wiring, with no harness of our own unless the harness forbids it; whether pi allows it is being probed.
 
 ### The waker
 
