@@ -11,7 +11,7 @@ jiff = "0.2.45"
 mime2ext = "0.1.54"
 mime_guess = "2.0.5"
 libc = "0.2.191"
-notify = "8.2.2"
+notify = "9.0.0"
 
 # The command line, which a crate that only delivers can leave out.
 [features]

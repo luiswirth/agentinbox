@@ -40,20 +40,20 @@ use std::{
   os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
   path::{Path, PathBuf},
   sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
     mpsc,
   },
-  thread,
 };
 
 use jiff::{Timestamp, civil::DateTime, tz::TimeZone};
 use notify::{RecursiveMode, Watcher};
 
 mod alarm;
+mod follow;
 pub mod peers;
 mod status;
 pub use alarm::Alarm;
+pub use follow::{Follow, follow};
 pub use status::{Presence, Status, all};
 
 const TIME_FORMAT: &str = "%Y%m%dT%H%M%S.%6fZ";
@@ -670,78 +670,6 @@ pub fn whole(path: &Path) -> io::Result<bool> {
     Ok(()) => Ok(true),
     Err(fs::TryLockError::WouldBlock) => Ok(false),
     Err(fs::TryLockError::Error(e)) => Err(at(e, path)),
-  }
-}
-
-/// Follows an item where it lies: reads what it holds, and blocks at its end until more is written
-/// or it is whole, so that the end of reading is the end of the item. It waits by filesystem
-/// notifications and by the lock, never by polling. Follow an item after moving it, as a taker
-/// does, so that it stays where it is followed.
-pub fn follow(path: &Path) -> io::Result<Follow> {
-  let file = fs::File::open(path).map_err(|e| at(e, path))?;
-  let done = Arc::new(AtomicBool::new(false));
-  let lock = fs::File::open(path).map_err(|e| at(e, path))?;
-  match lock.try_lock_shared() {
-    Ok(()) => {
-      done.store(true, Ordering::Release);
-      return Ok(Follow {
-        file,
-        done,
-        changes: None,
-      });
-    }
-    Err(fs::TryLockError::WouldBlock) => {}
-    Err(fs::TryLockError::Error(e)) => return Err(at(e, path)),
-  }
-  let (tx, rx) = mpsc::channel();
-  let mut watcher = notify::recommended_watcher({
-    let tx = tx.clone();
-    move |_| {
-      let _ = tx.send(());
-    }
-  })
-  .map_err(io::Error::other)?;
-  watcher
-    .watch(path, RecursiveMode::NonRecursive)
-    .map_err(io::Error::other)?;
-  // The writer's release changes no data, so the end is waited for on the lock itself. Where the
-  // follower is dropped first, the thread ends with the writer.
-  thread::spawn({
-    let done = done.clone();
-    move || {
-      let _ = lock.lock_shared();
-      done.store(true, Ordering::Release);
-      let _ = tx.send(());
-    }
-  });
-  Ok(Follow {
-    file,
-    done,
-    changes: Some((watcher, rx)),
-  })
-}
-
-/// An item followed until it is whole (`follow`).
-pub struct Follow {
-  file: fs::File,
-  done: Arc<AtomicBool>,
-  changes: Option<(notify::RecommendedWatcher, mpsc::Receiver<()>)>,
-}
-
-impl Read for Follow {
-  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-    loop {
-      // Tested before the read: the writer wrote everything before it let go.
-      let done = self.done.load(Ordering::Acquire);
-      let n = self.file.read(buf)?;
-      if n > 0 || done || buf.is_empty() {
-        return Ok(n);
-      }
-      let Some((_, changes)) = &self.changes else {
-        return Ok(0);
-      };
-      changes.recv().map_err(io::Error::other)?;
-    }
   }
 }
 
