@@ -45,14 +45,14 @@
       });
 
     packages = forEachSystem (pkgs: rec {
-      agentinbox = pkgs.rustPlatform.buildRustPackage {
-        pname = "agentinbox";
+      mindio = pkgs.rustPlatform.buildRustPackage {
+        pname = "mindio";
         inherit ((pkgs.lib.importTOML ./Cargo.toml).package) version;
         src = ./.;
         cargoLock.lockFile = ./Cargo.lock;
-        meta.mainProgram = "agentinbox";
+        meta.mainProgram = "mindio";
       };
-      default = agentinbox;
+      default = mindio;
     });
 
     devShells = forEachSystem (pkgs: {

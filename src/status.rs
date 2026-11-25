@@ -1,6 +1,6 @@
 //! What others see of an agent: its status, one line on what it is doing and where, which it
-//! sets itself and which lasts until the next, the inbox's file `status`; and its presence, from
-//! the inbox's locks. Anyone may set any agent's status, as anyone may deliver into its inbox.
+//! sets itself and which lasts until the next, the file `status`; and its presence, from the
+//! locks. Anyone may set any agent's status, as anyone may deliver into its inbox.
 
 use std::{
   fs, io,
@@ -9,7 +9,7 @@ use std::{
   time::SystemTime,
 };
 
-use crate::{Inbox, at};
+use crate::{MindIo, at};
 
 pub struct Status {
   /// One line, never empty.
@@ -24,7 +24,7 @@ pub enum Presence {
   Awake,
   /// A mind waits and will wake itself: a lock on `asleep` is held.
   Asleep,
-  /// Neither: the waker brings it back as its bell rings.
+  /// Neither: the waker brings it back as it is woken.
   Offline,
 }
 
@@ -38,18 +38,9 @@ impl Presence {
   }
 }
 
-impl Inbox {
+impl MindIo {
   pub fn status_file(&self) -> PathBuf {
     self.root.join("status")
-  }
-
-  /// The agent's name: its inbox's.
-  pub fn name(&self) -> String {
-    self
-      .root
-      .file_name()
-      .map(|name| name.to_string_lossy().into_owned())
-      .unwrap_or_default()
   }
 
   /// The agent's status, if it set one.
@@ -81,9 +72,7 @@ impl Inbox {
       };
     }
     self.create()?;
-    let tmp = self
-      .tmp_dir()
-      .join(format!(".status.{}", std::process::id()));
+    let tmp = self.root.join(format!(".status.{}", std::process::id()));
     fs::OpenOptions::new()
       .write(true)
       .create(true)
@@ -107,24 +96,24 @@ impl Inbox {
   }
 }
 
-/// The inboxes in a directory, such as the machine's `~/.agents/inbox/`, by name.
-pub fn inboxes(dir: &Path) -> io::Result<Vec<Inbox>> {
+/// The agents' IO in a directory, such as the machine's `~/.agents/mindio/`, by name.
+pub fn all(dir: &Path) -> io::Result<Vec<MindIo>> {
   let entries = match fs::read_dir(dir) {
     Ok(entries) => entries,
     Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
     Err(e) => return Err(at(e, dir)),
   };
-  let mut inboxes = Vec::new();
+  let mut all = Vec::new();
   for entry in entries {
     let entry = entry.map_err(|e| at(e, dir))?;
     if !entry.file_name().to_string_lossy().starts_with('.')
       && entry.file_type().is_ok_and(|t| t.is_dir())
     {
-      inboxes.push(Inbox::new(entry.path()));
+      all.push(MindIo::new(entry.path()));
     }
   }
-  inboxes.sort_by(|a, b| a.root.cmp(&b.root));
-  Ok(inboxes)
+  all.sort_by(|a, b| a.root.cmp(&b.root));
+  Ok(all)
 }
 
 /// The text on one line, its runs of whitespace one space each.

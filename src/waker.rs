@@ -1,5 +1,5 @@
-//! The machine's waker: one process that watches every inbox in a directory, answers each one's
-//! bell by running its `resume` while the agent is offline, and runs each one's alarms.
+//! The machine's waker: one process that watches every agent's IO in a directory, answers each
+//! agent's wake by running its `resume` while the agent is offline, and runs its alarms.
 
 use std::{
   collections::{HashMap, HashSet},
@@ -19,10 +19,10 @@ use std::{
   thread,
 };
 
-use agentinbox::{Alarm, Inbox};
+use mindio::{Alarm, Kind, MindIo};
 use notify::{RecursiveMode, Watcher};
 
-/// One inbox the waker keeps, by the nudges to its answerer and its alarms' keeper.
+/// One agent the waker keeps, by the nudges to its answerer and its alarms' keeper.
 struct Kept {
   nudge: Sender<()>,
   alarms: Sender<()>,
@@ -39,18 +39,18 @@ pub fn run(dir: &Path) -> io::Result<()> {
   let watched = dir.clone();
   let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
     match event {
-      Ok(event) if !agentinbox::changes(&event) => {}
+      Ok(event) if !mindio::changes(&event) => {}
       Ok(event) => {
         for path in event.paths {
-          let inbox = path
+          let agent = path
             .strip_prefix(&watched)
             .ok()
             .and_then(|rest| rest.components().next())
             .map(|c| c.as_os_str().to_owned());
-          let _ = tx.send(inbox);
+          let _ = tx.send(agent);
         }
       }
-      // An overflow or the like: look at every inbox again.
+      // An overflow or the like: look at every agent again.
       Err(_) => {
         let _ = tx.send(None);
       }
@@ -82,8 +82,8 @@ pub fn run(dir: &Path) -> io::Result<()> {
   Ok(())
 }
 
-/// Brings one inbox in line with its directory: starts keeping it and nudges its answerer;
-/// drops it where it is gone.
+/// Brings one agent in line with its directory: starts keeping it and nudges its answerer; drops
+/// it where it is gone.
 fn keep(dir: &Path, name: &OsString, kept: &mut HashMap<OsString, Kept>) {
   let root = dir.join(name);
   if name.to_string_lossy().starts_with('.') || !root.is_dir() {
@@ -92,60 +92,62 @@ fn keep(dir: &Path, name: &OsString, kept: &mut HashMap<OsString, Kept>) {
   }
   let entry = kept.entry(name.clone()).or_insert_with(|| {
     let (nudge, nudges) = mpsc::channel();
-    let inbox = Inbox::new(&root);
+    let mindio = MindIo::new(&root);
     thread::spawn(move || {
-      if let Err(error) = answer(&inbox, &nudges) {
-        eprintln!("agentinbox: {}: {error}", inbox.root.display());
+      if let Err(error) = answer(&mindio, &nudges) {
+        eprintln!("mindio: {}: {error}", mindio.root.display());
       }
     });
     let (alarms, alarm_nudges) = mpsc::channel();
-    let inbox = Inbox::new(&root);
-    thread::spawn(move || keep_alarms(&inbox, &alarm_nudges));
+    let mindio = MindIo::new(&root);
+    thread::spawn(move || keep_alarms(&mindio, &alarm_nudges));
     Kept { nudge, alarms }
   });
   let _ = entry.nudge.send(());
   let _ = entry.alarms.send(());
 }
 
-/// Answers the inbox's bell, nudged at each change in it, until the inbox is gone: once the
-/// agent is offline, takes the ring and, while something is untaken, runs `resume` as the
-/// agent's turn, holding the awake lock. A ring that comes while a mind is awake or asleep is
-/// that mind's, and only what it leaves untaken is answered. It stops answering a ring after a
-/// run that failed, or that took nothing in, so that a broken command doesn't run in a loop.
-fn answer(inbox: &Inbox, nudges: &Receiver<()>) -> io::Result<()> {
+/// Answers the agent's wakes, nudged at each change in its directory, until the directory is
+/// gone: once the agent is offline, answers the wake and, while something is untaken, runs
+/// `resume` as the agent's turn, holding the awake lock. A wake that comes while a mind is awake
+/// or asleep is that mind's, and only what it leaves untaken is answered. It stops answering a
+/// wake after a run that failed, or that took nothing in, so that a broken command doesn't run in
+/// a loop.
+fn answer(mindio: &MindIo, nudges: &Receiver<()>) -> io::Result<()> {
+  let inbox = mindio.inbox();
   loop {
-    while !inbox.wake_file().exists() || inbox.resume()?.is_none() {
+    while !mindio.wake_file().exists() || mindio.resume()?.is_none() {
       if nudges.recv().is_err() {
         return Ok(());
       }
     }
     // A lock's release changes no file, so the wait for it blocks on the lock itself.
-    inbox.until_no_sleeper()?;
-    let _turn = inbox.hold_awake()?;
-    if inbox.asleep()? || !inbox.unring()? {
+    mindio.until_no_sleeper()?;
+    let _turn = mindio.hold_awake()?;
+    if mindio.asleep()? || !mindio.answer_wake()? {
       continue;
     }
     while let Some(oldest) = inbox.oldest_untaken()? {
-      let Some(resume) = inbox.resume()? else {
+      let Some(resume) = mindio.resume()? else {
         break;
       };
       let mut command = Command::new("sh");
       command
         .args(["-c", &resume])
-        .env("AGENT_INBOX", &inbox.root)
+        .env("MINDIO", &mindio.root)
         .stdin(Stdio::null());
       let status = unblock_signals(&mut command).status()?;
       if !status.success() {
         eprintln!(
-          "agentinbox: {}: the resume failed: {status}",
-          inbox.root.display()
+          "mindio: {}: the resume failed: {status}",
+          mindio.root.display()
         );
         break;
       }
       if inbox.new_dir().join(&oldest).exists() {
         eprintln!(
-          "agentinbox: {}: the resume took nothing in",
-          inbox.root.display()
+          "mindio: {}: the resume took nothing in",
+          mindio.root.display()
         );
         break;
       }
@@ -231,12 +233,12 @@ fn stop(state: &Mutex<RunnerState>) {
   }
 }
 
-/// Keeps the inbox's alarms running, nudged at each change in the inbox, until the inbox is gone:
+/// Keeps the agent's alarms running, nudged at each change in its directory, until it is gone:
 /// runs each alarm set, and stops each one dismissed or set anew under its name.
-fn keep_alarms(inbox: &Inbox, nudges: &Receiver<()>) {
+fn keep_alarms(mindio: &MindIo, nudges: &Receiver<()>) {
   let mut runners: HashMap<String, Runner> = HashMap::new();
   loop {
-    match alarms_set(inbox) {
+    match alarms_set(mindio) {
       Ok(set) => {
         runners.retain(|name, runner| {
           let kept = set.get(name) == Some(&runner.ino);
@@ -248,14 +250,14 @@ fn keep_alarms(inbox: &Inbox, nudges: &Receiver<()>) {
         for (name, ino) in set {
           runners.entry(name.clone()).or_insert_with(|| {
             let state = Arc::new(Mutex::new(RunnerState::default()));
-            let inbox = Inbox::new(&inbox.root);
+            let mindio = MindIo::new(&mindio.root);
             let runs = state.clone();
-            thread::spawn(move || run_alarm(&inbox, &name, &runs));
+            thread::spawn(move || run_alarm(&mindio, &name, &runs));
             Runner { ino, state }
           });
         }
       }
-      Err(error) => eprintln!("agentinbox: {}: {error}", inbox.root.display()),
+      Err(error) => eprintln!("mindio: {}: {error}", mindio.root.display()),
     }
     if nudges.recv().is_err() {
       for runner in runners.values() {
@@ -268,10 +270,10 @@ fn keep_alarms(inbox: &Inbox, nudges: &Receiver<()>) {
 
 /// The alarms set, each by the inode of its directory, which tells an alarm set anew under the
 /// same name.
-fn alarms_set(inbox: &Inbox) -> io::Result<HashMap<String, u64>> {
+fn alarms_set(mindio: &MindIo) -> io::Result<HashMap<String, u64>> {
   let mut set = HashMap::new();
-  for name in inbox.alarm_names()? {
-    if let Ok(metadata) = fs::metadata(inbox.alarm_path(&name)?) {
+  for name in mindio.alarm_names()? {
+    if let Ok(metadata) = fs::metadata(mindio.alarm_path(&name)?) {
       set.insert(name, metadata.ino());
     }
   }
@@ -283,24 +285,24 @@ fn alarms_set(inbox: &Inbox) -> io::Result<HashMap<String, u64>> {
 /// failed, that it is dismissed. A command killed by a signal from outside, such as the service
 /// manager's as it stops the waker, has not failed: the alarm stays, and runs again as the waker
 /// starts again.
-fn run_alarm(inbox: &Inbox, name: &str, state: &Mutex<RunnerState>) {
-  if let Err(error) = run_alarm_until_done(inbox, name, state) {
+fn run_alarm(mindio: &MindIo, name: &str, state: &Mutex<RunnerState>) {
+  if let Err(error) = run_alarm_until_done(mindio, name, state) {
     eprintln!(
-      "agentinbox: {}: the alarm `{name}`: {error}",
-      inbox.root.display()
+      "mindio: {}: the alarm `{name}`: {error}",
+      mindio.root.display()
     );
   }
 }
 
-fn run_alarm_until_done(inbox: &Inbox, name: &str, state: &Mutex<RunnerState>) -> io::Result<()> {
+fn run_alarm_until_done(mindio: &MindIo, name: &str, state: &Mutex<RunnerState>) -> io::Result<()> {
   loop {
-    let Some(alarm) = inbox.alarm(name)? else {
+    let Some(alarm) = mindio.alarm(name)? else {
       return Ok(());
     };
     let mut command = Command::new("sh");
     command
       .args(["-c", &alarm.command])
-      .env("AGENT_INBOX", &inbox.root)
+      .env("MINDIO", &mindio.root)
       .stdin(Stdio::null())
       .stdout(Stdio::null())
       .process_group(0);
@@ -333,28 +335,28 @@ fn run_alarm_until_done(inbox: &Inbox, name: &str, state: &Mutex<RunnerState>) -
     });
     {
       let state = state.lock().unwrap_or_else(|e| e.into_inner());
-      if state.stopped || STOPPING.load(Ordering::SeqCst) || !inbox.alarm_path(name)?.exists() {
+      if state.stopped || STOPPING.load(Ordering::SeqCst) || !mindio.alarm_path(name)?.exists() {
         return Ok(());
       }
     }
     match status {
       Ok(status) if status.signal().is_some() => {
         eprintln!(
-          "agentinbox: {}: the alarm `{name}` was stopped ({status}): it runs again as the waker starts again",
-          inbox.root.display()
+          "mindio: {}: the alarm `{name}` was stopped ({status}): it runs again as the waker starts again",
+          mindio.root.display()
         );
         return Ok(());
       }
       Ok(status) if status.success() => {
-        tell(inbox, &alarm, &alarm.message())?;
+        tell(mindio, &alarm, &alarm.message())?;
         if !alarm.repeat {
-          inbox.dismiss_alarm(name)?;
+          mindio.dismiss_alarm(name)?;
           return Ok(());
         }
       }
       failed => {
-        tell(inbox, &alarm, &failure(&alarm, failed))?;
-        inbox.dismiss_alarm(name)?;
+        tell(mindio, &alarm, &failure(&alarm, failed))?;
+        mindio.dismiss_alarm(name)?;
         return Ok(());
       }
     }
@@ -372,13 +374,10 @@ fn failure(alarm: &Alarm, failed: io::Result<ExitStatus>) -> String {
   )
 }
 
-/// Delivers what the alarm tells, from `alarm`, proposing to ring.
-fn tell(inbox: &Inbox, alarm: &Alarm, text: &str) -> io::Result<()> {
-  inbox.deliver(text.as_bytes(), "alarm", "txt")?;
-  let fields = [("from", "alarm"), ("alarm", &alarm.name), ("by", &alarm.by)];
-  if inbox.rings(&fields, true)? {
-    inbox.ring()?;
-  }
+/// Delivers what the alarm tells, from `alarm`, as an event.
+fn tell(mindio: &MindIo, alarm: &Alarm, text: &str) -> io::Result<()> {
+  let fields = [("alarm", alarm.name.as_str()), ("by", &alarm.by)];
+  mindio.deliver(text.as_bytes(), "alarm", "txt", Kind::Event, &fields)?;
   Ok(())
 }
 

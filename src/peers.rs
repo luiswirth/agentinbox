@@ -1,11 +1,11 @@
 //! The peers: other machines of the user's, whose agents are seen beside this machine's, since
-//! inboxes are per machine. The inbox knows no machine: a peer is a name and a command that
-//! lists its agents, a line `<name> <command>` of `agentinbox/peers` in the user's config
-//! directory, such as `lwirth-macbook ssh -o ConnectTimeout=3 lwirth-macbook agentinbox agents
+//! an agent's IO is on its machine. MindIO knows no machine: a peer is a name and a command that
+//! lists its agents, a line `<name> <command>` of `mindio/peers` in the user's config
+//! directory, such as `lwirth-macbook ssh -o ConnectTimeout=3 lwirth-macbook mindio agents
 //! --here --porcelain`, run with `sh -c`.
 //!
 //! Its agents are named `<peer>:<agent>`. What a peer listed last is kept in the user's cache
-//! directory, `agentinbox/peers/<name>`, so that a look at every step, as the sense `others`
+//! directory, `mindio/peers/<name>`, so that a look at every step, as the sense `others`
 //! takes, asks a peer at most once in a while; a peer out of reach keeps what it listed last,
 //! and is asked again only once that while has passed.
 
@@ -20,7 +20,7 @@ use std::{
   time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{Inbox, at, inboxes};
+use crate::{MindIo, all, at};
 
 /// How long a peer's command may take before it counts as out of reach.
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -28,7 +28,7 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// An agent as a listing tells it, of this machine or a peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Agent {
-  /// Its name: its inbox's, prefixed with `<peer>:` for a peer's.
+  /// Its name: its directory's, prefixed with `<peer>:` for a peer's.
   pub name: String,
   /// Awake, asleep or offline.
   pub presence: String,
@@ -48,12 +48,12 @@ pub struct Peer {
 }
 
 impl Agent {
-  /// The agent of an inbox, as it is a moment ago.
-  pub fn of(inbox: &Inbox) -> io::Result<Self> {
+  /// The agent, as it is a moment ago.
+  pub fn of(mindio: &MindIo) -> io::Result<Self> {
     Ok(Self {
-      name: inbox.name(),
-      presence: inbox.presence()?.name().to_string(),
-      status: inbox.status()?.map(|status| (status.text, status.set)),
+      name: mindio.name(),
+      presence: mindio.presence()?.name().to_string(),
+      status: mindio.status()?.map(|status| (status.text, status.set)),
     })
   }
 
@@ -99,9 +99,9 @@ impl Agent {
   }
 }
 
-/// This machine's agents, one per inbox in the directory, such as `~/.agents/inbox/`.
+/// This machine's agents, one per directory in `dir`, such as `~/.agents/mindio/`.
 pub fn here(dir: &Path) -> io::Result<Vec<Agent>> {
-  inboxes(dir)?.iter().map(Agent::of).collect()
+  all(dir)?.iter().map(Agent::of).collect()
 }
 
 /// The user's config directory.
@@ -115,13 +115,13 @@ fn cache_dir() -> Option<PathBuf> {
   env::var_os("XDG_CACHE_HOME")
     .map(PathBuf::from)
     .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-    .map(|cache| cache.join("agentinbox/peers"))
+    .map(|cache| cache.join("mindio/peers"))
 }
 
 /// The peers, each with its agents: asked anew where it was last asked longer than `max_age`
 /// ago, else as it listed them last. `Duration::ZERO` asks every peer now.
 pub fn peers(max_age: Duration) -> io::Result<Vec<Peer>> {
-  let Some(path) = config_dir().map(|config| config.join("agentinbox/peers")) else {
+  let Some(path) = config_dir().map(|config| config.join("mindio/peers")) else {
     return Ok(Vec::new());
   };
   let list = match fs::read_to_string(&path) {
@@ -139,7 +139,7 @@ pub fn peers(max_age: Duration) -> io::Result<Vec<Peer>> {
     .filter(|line| !line.is_empty() && !line.starts_with('#'))
   {
     let Some((name, command)) = line.split_once(char::is_whitespace) else {
-      eprintln!("agentinbox: the peer `{line}` has no command");
+      eprintln!("mindio: the peer `{line}` has no command");
       continue;
     };
     peers.push(peer(&cache, name, command.trim(), max_age)?);

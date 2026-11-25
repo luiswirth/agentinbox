@@ -1,12 +1,12 @@
 //! Alarms: a command that waits, and a note, which the machine's waker delivers into the inbox
-//! once the command ends. An alarm is the directory `alarms/<name>/` of the inbox, so it
-//! outlasts restarts, and dismissing it is removing it.
+//! once the command ends, proposing to wake the agent. An alarm is the directory
+//! `alarms/<name>/` of the agent's IO, so it outlasts restarts, and dismissing it is removing it.
 //!
 //! Its files: `command`, run with `sh -c` in the directory `dir`, `note`, `by`, who set it, and
 //! `repeat`, present where it is set again after each time it goes off.
 //!
 //! The command only waits, and since it runs again after a restart, it waits for something that
-//! holds then too, such as a time (`agentinbox until`). One that fails dismisses its alarm, so
+//! holds then too, such as a time (`mindio until`). One that fails dismisses its alarm, so
 //! that a broken command never wakes the agent again and again.
 
 use std::{
@@ -15,7 +15,7 @@ use std::{
   path::PathBuf,
 };
 
-use crate::{Inbox, at};
+use crate::{MindIo, at};
 
 pub struct Alarm {
   pub name: String,
@@ -41,14 +41,14 @@ impl Alarm {
   }
 }
 
-impl Inbox {
+impl MindIo {
   pub fn alarms_dir(&self) -> PathBuf {
     self.root.join("alarms")
   }
 
-  /// Sets an alarm, under a name no other alarm of the inbox has: written in `tmp/`, then renamed
-  /// into place, so that the waker only ever sees whole alarms, and sees the rename in `tmp/`,
-  /// which it watches from the inbox's start, where `alarms/` may be new.
+  /// Sets an alarm, under a name no other alarm of the agent has: written beside `alarms/`, then
+  /// renamed into place, so that the waker only ever sees whole alarms, and sees the rename in
+  /// the agent's directory, which it watches from its start, where `alarms/` may be new.
   pub fn set_alarm(&self, alarm: &Alarm) -> io::Result<()> {
     let name = &alarm.name;
     let path = self.alarm_path(name)?;
@@ -68,7 +68,7 @@ impl Inbox {
       ));
     }
     let tmp = self
-      .tmp_dir()
+      .root
       .join(format!(".alarm.{name}.{}", std::process::id()));
     fs::DirBuilder::new()
       .recursive(true)
@@ -168,11 +168,11 @@ impl Inbox {
   }
 
   /// Dismisses the alarm: whether it was set, so that of concurrent dismissers exactly one does.
-  /// It is renamed into `tmp/` first, so that it goes at once and whole.
+  /// It is renamed aside first, so that it goes at once and whole.
   pub fn dismiss_alarm(&self, name: &str) -> io::Result<bool> {
     let path = self.alarm_path(name)?;
     let aside = self
-      .tmp_dir()
+      .root
       .join(format!(".alarm.{name}.dismissed.{}", std::process::id()));
     match fs::rename(&path, &aside) {
       Ok(()) => fs::remove_dir_all(&aside).map_err(|e| at(e, &aside))?,

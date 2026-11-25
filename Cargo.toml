@@ -1,5 +1,5 @@
 [package]
-name = "agentinbox"
+name = "mindio"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
@@ -19,5 +19,5 @@ default = ["cli"]
 cli = ["dep:clap"]
 
 [[bin]]
-name = "agentinbox"
+name = "mindio"
 required-features = ["cli"]

@@ -1,22 +1,31 @@
-//! An agent's inbox, its perception of everything outside it: a directory like a maildir, which
-//! anything may deliver into:
-//! `new/` holds the items not yet taken in, `cur/` the taken ones, `tmp/` the ones being written,
-//! the file `wake` is the doorbell, a lock on the file `awake` says the agent is in a turn, and a
-//! lock on the file `asleep` says that a mind of it waits and will wake itself. The file `resume`
-//! holds the command that brings the agent's mind back, which the machine's waker runs. The
-//! directory `alarms/` holds the alarms (`Alarm`), which the waker also runs, and the file
-//! `status` the agent's status (`Status`), what others see of it. Other machines' agents are
-//! seen through the peers (`peers`).
+//! MindIO: the boundary between an agent's mind and its world, as IO is in hardware: input,
+//! output and waking, where hardware has interrupts.
 //!
-//! An item is one file, named `<time>.<sender>.<ext>`, such as `20261115T153012.123456Z.luis.md`,
-//! with the time in UTC to the microsecond, so that the names sort by time, and the sender
-//! encoded one to one: a `/` as `_`, and every other byte but ASCII letters, digits and `-` as
-//! `%XX`, such as `luis_lead` for `luis/lead`.
+//! An agent's IO is one directory on its machine, by convention `~/.agents/mindio/<agent>/`,
+//! named after the agent (`MindIo`):
 //!
-//! The agent's outbox is the inbox's dual (`Outbox`): what the agent says to someone outside,
-//! by writing a file, named `<time>.<recipient>.<ext>` the same way, which a subscriber carries.
+//! - `inbox/`, the input (`Inbox`): what reaches the agent from outside, which the mind takes in at
+//!   its next step.
+//! - `outbox/`, the output (`Outbox`): what the agent says to someone outside, which a subscriber
+//!   carries.
+//! - `wake`, the file that wakes the agent: present from a wake until a mind answers it.
+//! - `awake`, locked while a mind is in a turn, and `asleep`, locked while a mind waits and wakes
+//!   itself; with neither held, the agent is offline.
+//! - `resume`, the command that brings the agent's mind back, which the machine's waker runs.
+//! - `waking`, the agent's rules on what wakes it (`MindIo::wakes`).
+//! - `alarms/`, the alarms (`Alarm`), which the waker runs.
+//! - `status`, the agent's status (`Status`), what others see of it.
 //!
-//! What it creates is its owner's alone: its directories 0700, its items and files 0600.
+//! The inbox and the outbox are one pair, each a directory of items: `new/` holds the items not
+//! yet taken, `cur/` the taken ones, `tmp/` the ones being written. An item is one file, named
+//! `<time>.<name>.<ext>`, such as `20261115T153012.123456Z.luis.md`, with the time in UTC to the
+//! microsecond, so that the names sort by time, and the name, the sender's in the inbox and the
+//! recipient's in the outbox, encoded one to one: a `/` as `_`, and every other byte but ASCII
+//! letters, digits and `-` as `%XX`, such as `luis_lead` for `luis/lead`.
+//!
+//! Other machines' agents are seen through the peers (`peers`).
+//!
+//! What it creates is its owner's alone: its directories 0700, its files 0600.
 
 use std::{
   ffi::OsString,
@@ -37,12 +46,44 @@ mod alarm;
 pub mod peers;
 mod status;
 pub use alarm::Alarm;
-pub use status::{Presence, Status, inboxes};
+pub use status::{Presence, Status, all};
 
 const TIME_FORMAT: &str = "%Y%m%dT%H%M%S.%6fZ";
 const TIME_LEN: usize = "20261115T153012.123456Z".len();
 
+/// The waking rules every agent's own come after: every event wakes, and no reading does.
+pub const DEFAULT_WAKING: &str = "kind=event wake\nkind=reading quiet\n";
+
+/// What an inbox item is, by how it came: the two kinds of providers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+  /// Something that happened, delivered as it happens, such as a message.
+  Event,
+  /// A state, delivered as the agent looks, by a reading the take runs, such as the time.
+  Reading,
+}
+
+impl Kind {
+  pub fn name(self) -> &'static str {
+    match self {
+      Self::Event => "event",
+      Self::Reading => "reading",
+    }
+  }
+}
+
+/// An agent's IO: its directory, named after it.
+pub struct MindIo {
+  pub root: PathBuf,
+}
+
+/// The input: what reaches the agent from outside.
 pub struct Inbox {
+  pub root: PathBuf,
+}
+
+/// The output: what the agent says to someone outside.
+pub struct Outbox {
   pub root: PathBuf,
 }
 
@@ -63,19 +104,38 @@ pub enum Content {
   },
 }
 
-impl Inbox {
+/// An outbox item a subscriber took.
+pub struct Outgoing {
+  /// Where it lies now, in `cur/`.
+  pub path: PathBuf,
+  pub time: Timestamp,
+  pub recipient: String,
+  pub ext: String,
+}
+
+impl MindIo {
   pub fn new(root: impl Into<PathBuf>) -> Self {
     Self { root: root.into() }
   }
 
-  pub fn new_dir(&self) -> PathBuf {
-    self.root.join("new")
+  /// The agent's name: its directory's.
+  pub fn name(&self) -> String {
+    self
+      .root
+      .file_name()
+      .map(|name| name.to_string_lossy().into_owned())
+      .unwrap_or_default()
   }
-  pub fn cur_dir(&self) -> PathBuf {
-    self.root.join("cur")
+
+  pub fn inbox(&self) -> Inbox {
+    Inbox {
+      root: self.root.join("inbox"),
+    }
   }
-  pub fn tmp_dir(&self) -> PathBuf {
-    self.root.join("tmp")
+  pub fn outbox(&self) -> Outbox {
+    Outbox {
+      root: self.root.join("outbox"),
+    }
   }
   pub fn wake_file(&self) -> PathBuf {
     self.root.join("wake")
@@ -89,6 +149,37 @@ impl Inbox {
   pub fn resume_file(&self) -> PathBuf {
     self.root.join("resume")
   }
+  pub fn waking_file(&self) -> PathBuf {
+    self.root.join("waking")
+  }
+
+  /// Creates the agent's directory, its inbox and its outbox where they are missing, its owner's
+  /// alone.
+  pub fn create(&self) -> io::Result<()> {
+    private_dir(&self.root)?;
+    create_queue(&self.inbox().root)?;
+    create_queue(&self.outbox().root)
+  }
+
+  /// Delivers an item into the inbox, from `sender`, and wakes the agent where its waking rules
+  /// say so (`wakes`), matched by `from`, `kind` and the provider's own `fields`.
+  pub fn deliver(
+    &self,
+    content: impl Read,
+    sender: &str,
+    ext: &str,
+    kind: Kind,
+    fields: &[(&str, &str)],
+  ) -> io::Result<PathBuf> {
+    self.create()?;
+    let path = self.inbox().deliver(content, sender, ext)?;
+    let mut all = vec![("from", sender), ("kind", kind.name())];
+    all.extend_from_slice(fields);
+    if self.wakes(&all)? {
+      self.wake()?;
+    }
+    Ok(path)
+  }
 
   /// The command that brings the agent's mind back, as whoever started it wrote it, if any.
   pub fn resume(&self) -> io::Result<Option<String>> {
@@ -100,74 +191,58 @@ impl Inbox {
     }
   }
 
-  /// Creates the inbox's directories where they are missing, its owner's alone.
-  pub fn create(&self) -> io::Result<()> {
-    create_maildir(&self.root)
-  }
-
-  /// Writes the item into `tmp/`, then links it into `new/` under a name no other item has,
-  /// so that `new/` only ever holds complete items and no delivery overwrites another.
-  pub fn deliver(&self, content: impl Read, sender: &str, ext: &str) -> io::Result<PathBuf> {
-    self.create()?;
-    write_item(&self.root, content, sender, ext)
-  }
-
-  pub fn dnd_file(&self) -> PathBuf {
-    self.root.join("do-not-disturb")
-  }
-
-  /// Whether an item rings the bell: its sender proposes, as `proposed`, and the agent's
-  /// do-not-disturb settings, the file `do-not-disturb`, dispose. Each of its lines is a rule,
-  /// fields to match and then `ring` or `quiet`, such as `session=hive reach=session quiet`, or
-  /// `quiet` alone for everything; a field matches where the item has it with that value, the
-  /// last rule that matches decides, and where none does, the proposal stands. `#` starts a
-  /// comment. A line that is no rule is an error, so no rule is lost unseen.
-  pub fn rings(&self, fields: &[(&str, &str)], proposed: bool) -> io::Result<bool> {
-    let path = self.dnd_file();
-    let rules = match fs::read_to_string(&path) {
+  /// Whether an item wakes the agent, by its fields, such as `from=luis kind=event`: the agent
+  /// decides, by its waking rules, the file `waking`, read after the defaults
+  /// (`DEFAULT_WAKING`). Each line is a rule, fields to match and then `wake` or `quiet`, such as
+  /// `from=lead quiet`, or `quiet` alone for everything; a field matches where the item has it
+  /// with that value, and the last rule that matches decides. `#` starts a comment. A line that
+  /// is no rule is an error, so no rule is lost unseen.
+  pub fn wakes(&self, fields: &[(&str, &str)]) -> io::Result<bool> {
+    let path = self.waking_file();
+    let own = match fs::read_to_string(&path) {
       Ok(rules) => rules,
-      Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(proposed),
+      Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
       Err(e) => return Err(at(e, &path)),
     };
-    let mut rings = proposed;
-    for (n, line) in rules.lines().enumerate() {
-      let line = line.split('#').next().unwrap_or_default();
-      let mut words: Vec<_> = line.split_whitespace().collect();
-      let Some(verdict) = words.pop() else {
-        continue;
-      };
-      let invalid = |what: &str| {
-        io::Error::new(
-          io::ErrorKind::InvalidData,
-          format!("{}:{}: {what}", path.display(), n + 1),
-        )
-      };
-      let verdict = match verdict {
-        "ring" => true,
-        "quiet" => false,
-        _ => return Err(invalid("a rule ends in `ring` or `quiet`")),
-      };
-      let mut matches = true;
-      for word in words {
-        let (key, value) = word
-          .split_once('=')
-          .ok_or_else(|| invalid("a field is `<name>=<value>`"))?;
-        matches &= fields.iter().any(|&(k, v)| k == key && v == value);
-      }
-      if matches {
-        rings = verdict;
+    let mut wakes = false;
+    for (source, rules) in [
+      ("the defaults", DEFAULT_WAKING),
+      (&*path.to_string_lossy(), &own),
+    ] {
+      for (n, line) in rules.lines().enumerate() {
+        let line = line.split('#').next().unwrap_or_default();
+        let mut words: Vec<_> = line.split_whitespace().collect();
+        let Some(verdict) = words.pop() else {
+          continue;
+        };
+        let invalid = |what: &str| {
+          io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{source}:{}: {what}", n + 1),
+          )
+        };
+        let verdict = match verdict {
+          "wake" => true,
+          "quiet" => false,
+          _ => return Err(invalid("a rule ends in `wake` or `quiet`")),
+        };
+        let mut matches = true;
+        for word in words {
+          let (key, value) = word
+            .split_once('=')
+            .ok_or_else(|| invalid("a field is `<name>=<value>`"))?;
+          matches &= fields.iter().any(|&(k, v)| k == key && v == value);
+        }
+        if matches {
+          wakes = verdict;
+        }
       }
     }
-    Ok(rings)
+    Ok(wakes)
   }
 
-  /// Whether the agent is not to be disturbed, as others see it: whether a mention, from anyone
-  /// in any session, would stay quiet.
-  pub fn dnd(&self) -> io::Result<bool> {
-    Ok(!self.rings(&[("reach", "ping")], true)?)
-  }
-
-  pub fn ring(&self) -> io::Result<()> {
+  /// Wakes the agent: creates `wake`, which stays until a mind answers it.
+  pub fn wake(&self) -> io::Result<()> {
     self.create()?;
     let wake = self.wake_file();
     fs::OpenOptions::new()
@@ -179,10 +254,119 @@ impl Inbox {
     Ok(())
   }
 
+  /// Blocks until the agent is woken, then answers the wake by removing `wake`.
+  /// Returns at once where it was woken since the last wait.
+  pub fn wait(&self) -> io::Result<()> {
+    self.until(|io| io.answer_wake())
+  }
+
+  /// Blocks until the agent is woken, leaving `wake` in place for whoever answers it.
+  pub fn until_woken(&self) -> io::Result<()> {
+    self.until(|io| Ok(io.wake_file().exists()))
+  }
+
+  /// Answers a wake by removing `wake`: whether there was one, so that of concurrent answerers
+  /// exactly one does.
+  pub fn answer_wake(&self) -> io::Result<bool> {
+    let wake = self.wake_file();
+    match fs::remove_file(&wake) {
+      Ok(()) => Ok(true),
+      Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+      Err(e) => Err(at(e, &wake)),
+    }
+  }
+
+  /// Takes the exclusive lock on `awake`, waiting while another holds it:
+  /// the agent is awake until the returned file is dropped or the process ends,
+  /// and then the system releases the lock, so it never goes stale.
+  pub fn hold_awake(&self) -> io::Result<fs::File> {
+    self.create()?;
+    let (file, path) = self.lock_file(self.awake_file())?;
+    file.lock().map_err(|e| at(e, &path))?;
+    Ok(file)
+  }
+
+  /// Takes a shared lock on `asleep`: a mind of the agent waits and will wake itself, such as an
+  /// interactive session that keeps a `wait` running, until the returned file is dropped or the
+  /// process ends. Several may hold it at once.
+  pub fn hold_asleep(&self) -> io::Result<fs::File> {
+    self.create()?;
+    let (file, path) = self.lock_file(self.asleep_file())?;
+    file.lock_shared().map_err(|e| at(e, &path))?;
+    Ok(file)
+  }
+
+  /// Blocks while any mind holds `asleep`: once it returns, none did a moment ago. It fails
+  /// where the directory is gone, and never makes it again.
+  pub fn until_no_sleeper(&self) -> io::Result<()> {
+    let (file, path) = self.lock_file(self.asleep_file())?;
+    file.lock().map_err(|e| at(e, &path))
+  }
+
+  fn lock_file(&self, path: PathBuf) -> io::Result<(fs::File, PathBuf)> {
+    let file = fs::OpenOptions::new()
+      .create(true)
+      .append(true)
+      .mode(0o600)
+      .open(&path)
+      .map_err(|e| at(e, &path))?;
+    Ok((file, path))
+  }
+
+  /// Whether the agent is awake: whether any open file holds the lock on `awake`, in this process
+  /// or another. It tests by taking the lock for a moment, during which a `hold_awake` waits.
+  pub fn awake(&self) -> io::Result<bool> {
+    held(&self.awake_file())
+  }
+
+  /// Whether a mind of the agent is asleep: whether any open file holds the lock on `asleep`.
+  pub fn asleep(&self) -> io::Result<bool> {
+    held(&self.asleep_file())
+  }
+
+  /// Blocks until `done` holds, testing it at once and at every change in the directory itself.
+  fn until(&self, done: impl Fn(&Self) -> io::Result<bool>) -> io::Result<()> {
+    self.create()?;
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(tx).map_err(io::Error::other)?;
+    watcher
+      .watch(&self.root, RecursiveMode::NonRecursive)
+      .map_err(io::Error::other)?;
+    while !done(self)? {
+      while !changes(
+        &rx
+          .recv()
+          .map_err(io::Error::other)?
+          .map_err(io::Error::other)?,
+      ) {}
+    }
+    Ok(())
+  }
+}
+
+impl Inbox {
+  pub fn new_dir(&self) -> PathBuf {
+    self.root.join("new")
+  }
+  pub fn cur_dir(&self) -> PathBuf {
+    self.root.join("cur")
+  }
+  pub fn tmp_dir(&self) -> PathBuf {
+    self.root.join("tmp")
+  }
+
+  /// Writes the item into `tmp/`, then links it into `new/` under a name no other item has,
+  /// so that `new/` only ever holds complete items and no delivery overwrites another. It wakes
+  /// no one: `MindIo::deliver` also wakes.
+  pub fn deliver(&self, content: impl Read, sender: &str, ext: &str) -> io::Result<PathBuf> {
+    create_queue(&self.root)?;
+    write_item(&self.root, content, sender, ext)
+  }
+
   /// Moves every item in `new/` to `cur/`, in order, and returns them.
   /// The move comes first, so that of several concurrent takers exactly one gets each item.
   pub fn take(&self) -> io::Result<Vec<Item>> {
-    self.create()?;
+    create_queue(&self.root)?;
     let new = self.new_dir();
     let mut names: Vec<_> = fs::read_dir(&new)
       .map_err(|e| at(e, &new))?
@@ -207,7 +391,7 @@ impl Inbox {
 
   /// The oldest item in `new/`, not yet taken in, by its name.
   pub fn oldest_untaken(&self) -> io::Result<Option<OsString>> {
-    self.create()?;
+    create_queue(&self.root)?;
     let new = self.new_dir();
     let mut oldest: Option<OsString> = None;
     for entry in fs::read_dir(&new).map_err(|e| at(e, &new))? {
@@ -218,99 +402,69 @@ impl Inbox {
     }
     Ok(oldest)
   }
+}
 
-  /// Takes the exclusive lock on `awake`, waiting while another holds it:
-  /// the agent is awake until the returned file is dropped or the process ends,
-  /// and then the system releases the lock, so it never goes stale.
-  pub fn hold_awake(&self) -> io::Result<fs::File> {
-    self.create()?;
-    let (file, path) = self.lock_file(self.awake_file())?;
-    file.lock().map_err(|e| at(e, &path))?;
-    Ok(file)
+impl Outbox {
+  pub fn new_dir(&self) -> PathBuf {
+    self.root.join("new")
+  }
+  pub fn cur_dir(&self) -> PathBuf {
+    self.root.join("cur")
   }
 
-  /// Takes a shared lock on `asleep`: a mind of the agent waits and will wake itself, such as an
-  /// interactive session that keeps a `wait` running, until the returned file is dropped or the
-  /// process ends. Several may hold it at once.
-  pub fn hold_asleep(&self) -> io::Result<fs::File> {
-    self.create()?;
-    let (file, path) = self.lock_file(self.asleep_file())?;
-    file.lock_shared().map_err(|e| at(e, &path))?;
-    Ok(file)
-  }
-
-  /// Blocks while any mind holds `asleep`: once it returns, none did a moment ago. It fails
-  /// where the inbox is gone, and never makes it again.
-  pub fn until_no_sleeper(&self) -> io::Result<()> {
-    let (file, path) = self.lock_file(self.asleep_file())?;
-    file.lock().map_err(|e| at(e, &path))
-  }
-
-  fn lock_file(&self, path: PathBuf) -> io::Result<(fs::File, PathBuf)> {
-    let file = fs::OpenOptions::new()
-      .create(true)
-      .append(true)
-      .mode(0o600)
-      .open(&path)
-      .map_err(|e| at(e, &path))?;
-    Ok((file, path))
-  }
-
-  /// Whether the agent is awake: whether any open file holds the lock on `awake`, in this process or another.
-  /// It tests by taking the lock for a moment, during which a `hold_awake` waits.
-  pub fn awake(&self) -> io::Result<bool> {
-    held(&self.awake_file())
-  }
-
-  /// Whether a mind of the agent is asleep: whether any open file holds the lock on `asleep`.
-  pub fn asleep(&self) -> io::Result<bool> {
-    held(&self.asleep_file())
-  }
-
-  /// Blocks until the bell rings, then removes `wake`.
-  /// Returns at once if it has rung since the last wait.
-  pub fn wait(&self) -> io::Result<()> {
-    self.until(|inbox| inbox.unring())
-  }
-
-  /// Blocks until the bell has rung, leaving `wake` in place for whoever answers it.
-  pub fn rung(&self) -> io::Result<()> {
-    self.until(|inbox| Ok(inbox.wake_file().exists()))
-  }
-
-  /// Removes `wake`: whether the bell had rung, so that of concurrent answerers exactly one does.
-  pub fn unring(&self) -> io::Result<bool> {
-    let wake = self.wake_file();
-    match fs::remove_file(&wake) {
-      Ok(()) => Ok(true),
-      Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-      Err(e) => Err(at(e, &wake)),
+  /// Writes an item for `recipient`, such as `telegram:luis`, as `Inbox::deliver` writes one.
+  /// Answering an inbox item is writing an item for the name it came from.
+  pub fn send(&self, content: impl Read, recipient: &str, ext: &str) -> io::Result<PathBuf> {
+    if recipient.is_empty() {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "a recipient is a name, such as telegram:luis",
+      ));
     }
+    create_queue(&self.root)?;
+    write_item(&self.root, content, recipient, ext)
   }
 
-  /// Blocks until `done` holds, testing it at once and at every change in the inbox's root.
-  fn until(&self, done: impl Fn(&Self) -> io::Result<bool>) -> io::Result<()> {
-    self.create()?;
-    let (tx, rx) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(tx).map_err(io::Error::other)?;
-    watcher
-      .watch(&self.root, RecursiveMode::NonRecursive)
-      .map_err(io::Error::other)?;
-    while !done(self)? {
-      while !changes(
-        &rx
-          .recv()
-          .map_err(io::Error::other)?
-          .map_err(io::Error::other)?,
-      ) {}
+  /// Takes every item in `new/` whose recipient `serves` accepts, oldest first, by moving it into
+  /// `cur/` first, so that of several subscribers exactly one carries each; an item none serves
+  /// stays in `new/`. Only a regular file is an item: a link is never followed to what it points
+  /// at.
+  pub fn take(&self, serves: impl Fn(&str) -> bool) -> io::Result<Vec<Outgoing>> {
+    create_queue(&self.root)?;
+    let new = self.new_dir();
+    let mut names: Vec<(String, Timestamp, String, String)> = fs::read_dir(&new)
+      .map_err(|e| at(e, &new))?
+      .filter_map(|entry| entry.ok())
+      .filter(|entry| entry.file_type().is_ok_and(|t| t.is_file()))
+      .filter_map(|entry| {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let (time, recipient, ext) = parse_name(&name)?;
+        Some((name, time, recipient, ext))
+      })
+      .filter(|(_, _, recipient, _)| serves(recipient))
+      .collect();
+    names.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut taken = Vec::new();
+    for (name, time, recipient, ext) in names {
+      let path = self.cur_dir().join(&name);
+      match fs::rename(new.join(&name), &path) {
+        Ok(()) => taken.push(Outgoing {
+          path,
+          time,
+          recipient,
+          ext,
+        }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(at(e, &path)),
+      }
     }
-    Ok(())
+    Ok(taken)
   }
 }
 
 /// Whether an event changes a file: opening and closing one, as testing a lock or reading
-/// `resume` does, changes none, and waking at them would make every look at the inbox wake the
-/// watcher again.
+/// `resume` does, changes none, and waking at them would make every look at the directory wake
+/// the watcher again.
 pub fn changes(event: &notify::Event) -> bool {
   !event.kind.is_access()
 }
@@ -329,22 +483,28 @@ fn held(path: &Path) -> io::Result<bool> {
   }
 }
 
-/// Creates a maildir's directories where they are missing, its owner's alone.
-fn create_maildir(root: &Path) -> io::Result<()> {
+/// Creates a directory where it is missing, its owner's alone; one made before it was private
+/// becomes so.
+fn private_dir(dir: &Path) -> io::Result<()> {
+  fs::DirBuilder::new()
+    .recursive(true)
+    .mode(0o700)
+    .create(dir)
+    .map_err(|e| at(e, dir))?;
+  fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| at(e, dir))
+}
+
+/// Creates an inbox's or an outbox's directories where they are missing.
+fn create_queue(root: &Path) -> io::Result<()> {
   for dir in ["new", "cur", "tmp"].map(|d| root.join(d)) {
-    fs::DirBuilder::new()
-      .recursive(true)
-      .mode(0o700)
-      .create(&dir)
-      .map_err(|e| at(e, &dir))?;
-    // One made before its directories were private becomes so.
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|e| at(e, &dir))?;
+    private_dir(&dir)?;
   }
   Ok(())
 }
 
-/// Writes an item into the maildir at `root`: into `tmp/`, then linked into `new/` under a name no
-/// other item has, so that `new/` only ever holds complete items and none overwrites another.
+/// Writes an item into the inbox or outbox at `root`: into `tmp/`, then linked into `new/` under
+/// a name no other item has, so that `new/` only ever holds complete items and none overwrites
+/// another.
 fn write_item(root: &Path, mut content: impl Read, who: &str, ext: &str) -> io::Result<PathBuf> {
   let sender = encode(who);
   let ext = ext.trim_start_matches('.');
@@ -391,92 +551,6 @@ fn write_item(root: &Path, mut content: impl Read, who: &str, ext: &str) -> io::
       Err(e) if e.kind() == io::ErrorKind::AlreadyExists => last = time,
       Err(e) => return Err(at(e, &path)),
     }
-  }
-}
-
-/// An agent's outbox, the inbox's dual: what the agent says to someone outside, by writing a
-/// file, Luis (2026-11-16): "outbox is a great idea". `new/` holds the items not yet carried,
-/// `cur/` the carried ones, `tmp/` the ones being written; an item is `<time>.<recipient>.<ext>`,
-/// named as the inbox names its items, so that answering is writing an item for the name an inbox
-/// item came from. A subscriber, such as messagent for `telegram:`, takes the items for the
-/// recipients it serves and carries them; an item no subscriber serves stays in `new/`. A
-/// channel outside Vibe Together names its people as `<channel>:<name>`, such as `telegram:luis`,
-/// which no Vibe Together name can be, so that no participant passes for them.
-pub struct Outbox {
-  pub root: PathBuf,
-}
-
-/// An outbox item a subscriber took.
-pub struct Outgoing {
-  /// Where it lies now, in `cur/`.
-  pub path: PathBuf,
-  pub time: Timestamp,
-  pub recipient: String,
-  pub ext: String,
-}
-
-impl Outbox {
-  pub fn new(root: impl Into<PathBuf>) -> Self {
-    Self { root: root.into() }
-  }
-
-  pub fn new_dir(&self) -> PathBuf {
-    self.root.join("new")
-  }
-  pub fn cur_dir(&self) -> PathBuf {
-    self.root.join("cur")
-  }
-
-  /// Creates the outbox's directories where they are missing, its owner's alone.
-  pub fn create(&self) -> io::Result<()> {
-    create_maildir(&self.root)
-  }
-
-  /// Writes an item for `recipient`, as `Inbox::deliver` writes one.
-  pub fn send(&self, content: impl Read, recipient: &str, ext: &str) -> io::Result<PathBuf> {
-    if recipient.is_empty() {
-      return Err(io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "a recipient is a name, such as telegram:luis",
-      ));
-    }
-    self.create()?;
-    write_item(&self.root, content, recipient, ext)
-  }
-
-  /// Takes every item in `new/` whose recipient `serves` accepts, oldest first, by moving it into
-  /// `cur/` first, so that of several subscribers exactly one carries each. Only a regular file is
-  /// an item: a link is never followed to what it points at.
-  pub fn take(&self, serves: impl Fn(&str) -> bool) -> io::Result<Vec<Outgoing>> {
-    self.create()?;
-    let new = self.new_dir();
-    let mut names: Vec<(String, Timestamp, String, String)> = fs::read_dir(&new)
-      .map_err(|e| at(e, &new))?
-      .filter_map(|entry| entry.ok())
-      .filter(|entry| entry.file_type().is_ok_and(|t| t.is_file()))
-      .filter_map(|entry| {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let (time, recipient, ext) = parse_name(&name)?;
-        Some((name, time, recipient, ext))
-      })
-      .filter(|(_, _, recipient, _)| serves(recipient))
-      .collect();
-    names.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut taken = Vec::new();
-    for (name, time, recipient, ext) in names {
-      let path = self.cur_dir().join(&name);
-      match fs::rename(new.join(&name), &path) {
-        Ok(()) => taken.push(Outgoing {
-          path,
-          time,
-          recipient,
-          ext,
-        }),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(at(e, &path)),
-      }
-    }
-    Ok(taken)
   }
 }
 
@@ -652,8 +726,8 @@ mod tests {
 
   #[test]
   fn an_outbox_item_goes_to_the_one_subscriber_that_serves_it() {
-    let dir = std::env::temp_dir().join(format!("agentinbox-outbox-{}", std::process::id()));
-    let outbox = Outbox::new(&dir);
+    let dir = std::env::temp_dir().join(format!("mindio-outbox-{}", std::process::id()));
+    let outbox = MindIo::new(&dir).outbox();
     let sent = outbox.send(&b"hi"[..], "telegram:luis", "md").unwrap();
     assert!(sent.starts_with(outbox.new_dir()));
     assert!(sent.to_string_lossy().ends_with(".telegram%3Aluis.md"));
@@ -676,29 +750,30 @@ mod tests {
   }
 
   #[test]
-  fn do_not_disturb_disposes_what_the_sender_proposes() {
-    let dir = std::env::temp_dir().join(format!("agentinbox-dnd-{}", std::process::id()));
-    let inbox = Inbox::new(&dir);
-    inbox.create().unwrap();
-    let hive = [("from", "luis"), ("reach", "session"), ("session", "hive")];
-    let ping = [("from", "luis"), ("reach", "ping"), ("session", "hive")];
-    assert!(inbox.rings(&hive, true).unwrap());
+  fn the_agent_decides_what_wakes_it_over_the_defaults() {
+    let dir = std::env::temp_dir().join(format!("mindio-waking-{}", std::process::id()));
+    let mindio = MindIo::new(&dir);
+    mindio.create().unwrap();
+    let hive = [("from", "luis"), ("kind", "event"), ("session", "hive")];
+    let clock = [("from", "clock"), ("kind", "reading")];
+    assert!(mindio.wakes(&hive).unwrap());
+    assert!(!mindio.wakes(&clock).unwrap());
     fs::write(
-      inbox.dnd_file(),
-      "# listen in the hive\nsession=hive reach=session quiet\n\nfrom=context ring # loud\n",
+      mindio.waking_file(),
+      "# listen in the hive\nsession=hive quiet\n\nfrom=clock wake # loud\n",
     )
     .unwrap();
-    assert!(!inbox.rings(&hive, true).unwrap());
-    assert!(inbox.rings(&ping, true).unwrap());
-    assert!(inbox.rings(&[("from", "context")], false).unwrap());
-    fs::write(inbox.dnd_file(), "session=hive quiet\nfrom=luis ring\n").unwrap();
-    assert!(inbox.rings(&hive, false).unwrap());
-    assert!(!inbox.dnd().unwrap());
-    fs::write(inbox.dnd_file(), "quiet\nfrom=luis ring\n").unwrap();
-    assert!(inbox.dnd().unwrap());
-    assert!(inbox.rings(&hive, false).unwrap());
-    fs::write(inbox.dnd_file(), "session=hive loud\n").unwrap();
-    assert!(inbox.rings(&hive, true).is_err());
+    assert!(!mindio.wakes(&hive).unwrap());
+    assert!(mindio.wakes(&clock).unwrap());
+    fs::write(mindio.waking_file(), "quiet\nfrom=luis wake\n").unwrap();
+    assert!(mindio.wakes(&hive).unwrap());
+    assert!(
+      !mindio
+        .wakes(&[("from", "lead"), ("kind", "event")])
+        .unwrap()
+    );
+    fs::write(mindio.waking_file(), "session=hive loud\n").unwrap();
+    assert!(mindio.wakes(&hive).is_err());
     fs::remove_dir_all(&dir).unwrap();
   }
 }
