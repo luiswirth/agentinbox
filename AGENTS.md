@@ -1,5 +1,5 @@
 ---
-description: "MindIO: the boundary between an agent's mind and its world, as input, output and waking, on the agent's machine, part of Ag² (`~/dev/agentics`). Use when working on MindIO, or on how anything reaches an agent or leaves it."
+description: "MindIO: the boundary between an agent's mind and its world, as input, output and waking, on the agent's machine, part of my agentics (`~/dev/agentics`). Use when working on MindIO, or on how anything reaches an agent or leaves it."
 ---
 
 # MindIO
