@@ -1,5 +1,4 @@
-//! MindIO: the boundary between an agent's mind and its world, as IO is in hardware: input,
-//! output and waking, where hardware has interrupts.
+//! MindIO: the boundary between an agent's mind and its world: input, output and waking.
 //!
 //! An agent's IO is one directory on its machine, by convention `~/.agents/mindio/<agent>/`,
 //! named after the agent (`MindIo`):

@@ -14,8 +14,7 @@ use mindio::{Alarm, Kind, MindIo, extension, peers};
 mod waker;
 use clap::{Parser, Subcommand};
 
-/// MindIO: the boundary between an agent's mind and its world, as IO is in hardware: input,
-/// output and waking, where hardware has interrupts.
+/// MindIO: the boundary between an agent's mind and its world: input, output and waking.
 ///
 /// An agent's IO is a directory on its machine, made at first use. Its input is `inbox/`, what
 /// reaches the agent from outside, which anything on the machine may deliver into; the mind takes

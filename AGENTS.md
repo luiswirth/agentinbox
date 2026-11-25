@@ -4,8 +4,8 @@ description: "MindIO: the boundary between an agent's mind and its world, as inp
 
 # MindIO
 
-MindIO is a mind's IO, as hardware has IO: input, output and waking, where hardware has interrupts.
-Luis: "Wir haben wirklich IO und wir müssen wecken. Das ist nichts Neues. Das ist in Hardware so, in einem OS so und auch jetzt hier mit Agents."
+MindIO is a mind's IO: input, output and waking.
+A brain has the first two, perception and expression, but is never woken; IO in hardware or an OS has all three, with interrupts as the waking.
 It is for thinking about minds at the low level, in the style of Cogicorpus, without a harness of its own: whatever the harness, the mind's boundary with its world is MindIO.
 Modalities build on it, each doing all three for its own, such as VoiceIO (`~/dev/agentics/voiceio`).
 
