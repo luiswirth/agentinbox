@@ -5,7 +5,7 @@
 //! --here --porcelain`, run with `sh -c`.
 //!
 //! Its agents are named `<peer>:<agent>`. What a peer listed last is kept in the user's cache
-//! directory, `mindio/peers/<name>`, so that a look at every step, as the sense `others`
+//! directory, `mindio/peers/<name>`, so that a look at every step, as the sense `agent-statuses`
 //! takes, asks a peer at most once in a while; a peer out of reach keeps what it listed last,
 //! and is asked again only once that while has passed.
 

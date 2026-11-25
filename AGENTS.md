@@ -93,7 +93,7 @@ It is there for coordination, Luis: "agents maybe need a sense/perception to und
 - `mindio agents` lists the agents of the machine and of its peers, each with its presence, from the locks, and its status with when it was set.
 - An agent's IO is on its machine, so other machines' agents are seen through the peers: a line `<name> <command>` of `mindio/peers` in the user's config directory, whose command lists its agents, such as `ssh <host> mindio agents --here --porcelain`; MindIO knows no machine, and a peer's agents are `<peer>:<agent>`.
   What a peer listed last is cached, in `mindio/peers/` of the user's cache directory, and asked again once a look finds it older than the looker's while; a peer out of reach keeps what it listed last.
-- The sense `others` tells the statuses of the machine's other agents and of the peers', as they change, quietly; presence changes at every turn, so it is not told.
+- The sense `agent-statuses` tells the statuses of the machine's other agents and of the peers', as they change, quietly; presence changes at every turn, so it is not told.
 
 ## Harnesses
 
