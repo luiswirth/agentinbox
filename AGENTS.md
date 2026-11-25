@@ -18,7 +18,7 @@ It persists across the agent's minds.
 
 - `inbox/`, the input: what reaches the agent from outside, taken in at its next step.
 - `outbox/`, the output: what the agent says to someone outside, carried by a subscriber.
-- `wake`: present from a wake until a mind answers it.
+- `wake`: present from a wake until a mind answers it, and `interrupt` beside it where the wake also cuts off the running step.
 - `awake`, locked while a mind is in a turn, and `asleep`, shared-locked while a mind waits and wakes itself, such as an open interactive session; with neither held, the agent is offline.
 - `resume`: the command that brings the agent's mind back, run with `sh -c` and `MINDIO`; whoever starts the agent writes it, through the harness wiring, which writes one only where there is none.
 - `fresh`: asks for a fresh mind: the next wake starts a new session where the agent is idle; whoever triggers the agent writes it, and whatever brings the mind up removes it.
@@ -34,7 +34,9 @@ Every agent is reachable and wakeable from its start, and a daemon is only an ag
 The inbox and the outbox are one pair, the same shape mirrored: `new/` (not yet taken), `cur/` (taken), `tmp/` (being written), one file per item.
 
 - An item is `<time>.<name>.<ext>`: the time in UTC to the microsecond, so names sort by time; the name the inbox's sender or the outbox's recipient, encoded one to one, `/` as `_` and every other byte but letters, digits and `-` as `%XX`, so no name passes for another; the extension its type.
-- Writing goes into `tmp/` and hard-links into `new/`, so `new/` holds whole items and none overwrites another, with no lock among many writers.
+- Writing goes into `tmp/` and hard-links into `new/`, so none overwrites another, with no lock among many writers.
+- An item may stream, for a seamless real-time exchange: its writer takes an exclusive `flock` on it in `tmp/` and links it into `new/` as it starts, at its first byte, and it grows there; it is whole once no writer holds the lock, also where the writer crashed, which leaves it as far as it got. The lock is on the file, so it goes along into `cur/`. Streaming is an option for whoever writes, never a requirement (Luis, 2026-11-25), so an item written without the lock is whole at once. `mindio send` and `deliver` stream stdin.
+- A reader never reads an item before it is whole: it follows it (`mindio follow`), with filesystem notifications for what is written and the lock for the end, never polling. `take` gives each item once whole.
 - Taking moves to `cur/` first, so of concurrent takers exactly one gets each.
 - Answering an inbox item is writing an outbox item for the name it came from, such as `telegram:luis`.
 - A channel outside Vibe Together names its people as `<channel>:<name>`, which no Vibe Together name can be, so no participant passes for one of them.
@@ -48,11 +50,12 @@ Waking is not built into any provider: a provider only delivers events, and each
 Luis: "Mind I O sollte es möglich machen, für jeden Agent selber komplett customizen zu können. Super simpel, aber super expressive einzustellen, wie er geweckt wird."
 
 - An item has fields: `from`, `kind` (`event` or `reading`), and those its provider gives, such as an alarm's `alarm` and `by`.
-- The agent's rules, the file `waking`, come after the defaults, `kind=event wake` and `kind=reading quiet`: each line fields to match and `wake` or `quiet`, the last match deciding.
+- The agent's rules, the file `waking`, come after the defaults, `kind=event wake` and `kind=reading quiet`: each line fields to match and `quiet`, `wake` or `interrupt`, the last match deciding.
   So an agent that sets nothing is woken by every event: never being woken is the worst case, and a needless wake costs little, since the mind ends that turn at once.
+- They match at delivery, so an item that streams wakes or interrupts at its first byte.
+- An interrupt, Luis: "mind/input interrupts (like hardware). i love it.": it cuts off the running step, keeps the reply as far as it got, and continues with the input at once, once whole; `mindio wait` says which it was. An agent with no mind running is woken.
 - A harness gives a new session `mindio brief`, so every agent knows its IO and that its waking is its own.
 - Waking uses filesystem notifications, never polling.
-- To come, Luis's decision (2026-11-25), for a seamless real-time exchange: a third verdict, `interrupt`, beside `quiet` and `wake`, which cuts the running step off, keeps the reply as far as it got, and continues with the input at once; and outbox items that stream, growing as the agent writes them, where the harness can; streaming is an option, never a requirement, so a harness that can't writes each item whole, and readers take both (Luis, 2026-11-25). Luis: "hah! mind/input interrupts (like hardware). i love it." Both in the harness wiring, with no harness of our own unless the harness forbids it. pi allows both from an extension (probed 2026-11-25); model-pool, in front of Claude Code, doesn't stream tool-call arguments yet and can't take an interrupt cleanly.
 
 ### The waker
 
@@ -102,10 +105,11 @@ Each harness is wired by `harnesses/<harness>/`, which knows only MindIO, never 
 At a session's start, the wiring makes the agent's IO, `MINDIO` where it was started with one, else `~/.agents/mindio/<harness>-<session id>`, writes `resume` where there is none, gives a new session `mindio brief`, and holds `asleep` while an interactive session is open.
 
 - Claude Code: `mindio.sh` is the hook of `SessionStart`, `UserPromptSubmit` and `PostToolUse` (`settings.json`); a hook gets no environment from the session, so it finds the agent's IO by the session's id. At the start, it gives the session's commands `MINDIO` through `CLAUDE_ENV_FILE`, writes `claude -p --resume <session id>` as `resume`, and holds `asleep` with `mindio asleep --pid` on the Claude Code process; it takes in on each prompt and after each tool call. A running agent wakes by running `mindio wait && mindio take` as a background command, and runs it again; one that doesn't is woken only once its session ends, by the waker.
-- pi: the extension `mindio.ts`, installed for every session, takes in at each step, keeps a `wait` running, which steers what is new into a busy agent and starts a turn in an idle one, holds `mindio awake` from `agent_start` until `agent_settled` and `mindio asleep` while the session is open, and writes `pi -p --session <file>` as `resume`; a one-shot run (`-p`) keeps no `wait` and holds no lock, so the waker that started it holds `awake` for it; a wake with `fresh` starts a new session where the agent is idle.
+- pi: the extension `mindio.ts`, installed for every session, takes in at each step, keeps a `wait` running, which steers what is new into a busy agent and starts a turn in an idle one, holds `mindio awake` from `agent_start` until `agent_settled` and `mindio asleep` while the session is open, and writes `pi -p --session <file>` as `resume`; an interrupt aborts a busy run, keeps the reply cut off in what the model sees, with a result for a tool call it was writing, and starts the next run with what is new once whole; its tool `send` streams the text into an outbox item from the call's arguments as the model writes them; a one-shot run (`-p`) keeps no `wait` and holds no lock, so the waker that started it holds `awake` for it; a wake with `fresh` starts a new session where the agent is idle.
 
 ## Open
 
+- Interrupts in Claude Code: nothing cuts off its step, so an interrupt only wakes it; and model-pool, with Claude Code behind it, can't take one cleanly, since Claude Code keeps its own partial reply.
 - To be named better: the inbox and the outbox, as one pair. Luis: "Entweder heißen beide Inbox und Outbox oder wir finden für beide bessere Begriffe."
 - Claude Code: its hooks are ignored on Luis's machines, whose managed settings allow only managed hooks, so wiring them goes through `dothome`; a `Stop` hook with `asyncRewake` might wake an idle agent, untested; it holds no awake lock, since no hook lasts a turn.
 - An interactive session resumed by hand while the waker runs its resume is two minds on one session: the locks exclude only the waker.

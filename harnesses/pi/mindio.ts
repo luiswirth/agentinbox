@@ -6,6 +6,9 @@
 // has none; the resume finds this extension installed where pi loads it for every session.
 // A wake with the file `fresh` in the agent's IO starts a new session, a fresh mind's, where the
 // agent is idle; a busy agent takes it in its run, so the file only goes.
+// An interrupt cuts off a busy agent's run, keeps the reply as far as it got in what the model
+// sees, and starts a run with what is new once it is whole.
+// The tool `send` writes an outbox item, streamed into it as the model writes its text.
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import {
@@ -58,9 +61,190 @@ export default function (pi: ExtensionAPI) {
 		const i = steered.indexOf(message.content as string);
 		if (i >= 0) steered.splice(i, 1);
 	});
-	pi.on("agent_settled", () => {
+	// The terminal's abort hands pi's queues to the editor, dropping these; any other keeps them
+	// queued for the next run.
+	pi.on("agent_settled", (event, ctx) => {
+		if (event.aborted && ctx.mode !== "tui") steered.length = 0;
 		for (const content of steered.splice(0))
 			pi.sendMessage({ customType, content, display: true });
+		if (interrupted) {
+			interrupted = false;
+			void continueInterrupted();
+		}
+	});
+
+	// An interrupt: the run is cut off at once, and the next starts with what is new, once whole.
+	let interrupted = false;
+	async function continueInterrupted() {
+		const content = await take().catch((e) => String(e));
+		pi.sendMessage(
+			{
+				customType,
+				content: `You were interrupted: what you were doing was cut off where it ends.${content ? `\n\n${content}` : ""}`,
+				display: true,
+			},
+			{ triggerTurn: true },
+		);
+	}
+
+	// pi leaves a reply cut off by an abort out of what the model sees; it is kept as far as it got,
+	// with a result for each tool call it was writing, which never ran.
+	pi.on("context", (event) => {
+		let changed = false;
+		const messages: typeof event.messages = [];
+		for (const message of event.messages) {
+			if (message.role !== "assistant" || message.stopReason !== "aborted") {
+				messages.push(message);
+				continue;
+			}
+			changed = true;
+			const content = message.content.filter(
+				(block) =>
+					(block.type === "text" && block.text) ||
+					block.type === "toolCall" ||
+					(block.type === "thinking" && block.thinkingSignature),
+			);
+			const calls = content.filter((block) => block.type === "toolCall");
+			if (!content.some((block) => block.type !== "thinking")) continue;
+			messages.push({
+				...message,
+				content,
+				stopReason: calls.length ? "toolUse" : "stop",
+			});
+			for (const call of calls)
+				messages.push({
+					role: "toolResult",
+					toolCallId: call.id,
+					toolName: call.name,
+					content: [
+						{
+							type: "text",
+							text:
+								call.name === "send"
+									? "Cut off while you wrote it: the recipient got the text as far as you wrote it."
+									: "Cut off while you wrote it: it never ran.",
+						},
+					],
+					isError: true,
+					timestamp: message.timestamp,
+				});
+		}
+		if (changed) return { messages };
+	});
+
+	// `send`: each call is a `mindio send`, started once its recipient is whole and fed its text as
+	// the model writes it, so the item streams. A call whose text the stream did not carry, or a
+	// provider that streams no arguments, is sent whole as it runs.
+	type Ended = { code: number | null; path: string; error: string };
+	type Sending = {
+		child: ChildProcess;
+		written: number;
+		ended: Promise<Ended>;
+	};
+	const sendTool = "send";
+	const sendings = new Map<string, Sending>();
+
+	function startSending(id: string, recipient: string): Sending {
+		const child = spawn("mindio", ["send", recipient], {
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		let path = "";
+		let error = "";
+		child.stdout?.on("data", (data) => {
+			path += data;
+		});
+		child.stderr?.on("data", (data) => {
+			error += data;
+		});
+		child.stdin?.on("error", () => {});
+		const ended = new Promise<Ended>((resolve) => {
+			child.on("close", (code) =>
+				resolve({ code, path: path.trim(), error: error.trim() }),
+			);
+			child.on("error", (e) =>
+				resolve({ code: null, path: "", error: String(e) }),
+			);
+		});
+		const sending = { child, written: 0, ended };
+		sendings.set(id, sending);
+		return sending;
+	}
+
+	// Writes what is new of the text, holding back half of a surrogate pair until its other half.
+	function feed(sending: Sending, text: string, whole: boolean) {
+		let piece = text.slice(sending.written);
+		const last = piece.charCodeAt(piece.length - 1);
+		if (!whole && last >= 0xd800 && last < 0xdc00) piece = piece.slice(0, -1);
+		if (!piece) return;
+		sending.child.stdin?.write(piece);
+		sending.written += piece.length;
+	}
+
+	pi.on("message_update", (event, ctx) => {
+		const update = event.assistantMessageEvent;
+		if (update.type !== "toolcall_delta" && update.type !== "toolcall_end")
+			return;
+		// A few deltas still come after an abort: the item ends where the abort cut it.
+		if (ctx.signal?.aborted) return;
+		const end = update.type === "toolcall_end";
+		const call = end
+			? update.toolCall
+			: update.partial.content[update.contentIndex];
+		if (call?.type !== "toolCall" || call.name !== sendTool) return;
+		const args = (call.arguments ?? {}) as Record<string, unknown>;
+		let sending = sendings.get(call.id);
+		if (!sending) {
+			// The recipient is whole once another argument follows it, or the call is.
+			const keys = Object.keys(args);
+			const whole = end || keys.indexOf("recipient") < keys.length - 1;
+			if (typeof args.recipient !== "string" || !args.recipient || !whole)
+				return;
+			sending = startSending(call.id, args.recipient);
+		}
+		if (typeof args.text === "string") feed(sending, args.text, end);
+		if (end) sending.child.stdin?.end();
+	});
+
+	// The reply has ended, also cut off: every item it was writing ends as far as it got.
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant") return;
+		for (const sending of sendings.values()) sending.child.stdin?.end();
+	});
+
+	pi.registerTool({
+		name: sendTool,
+		label: "send",
+		description:
+			"Says something to someone outside: writes it as an item into your outbox, for a recipient, which a subscriber carries to them. It streams: the recipient gets the text as you write it. Answering an inbox item is sending to the name it came from.",
+		promptSnippet: "Say something to someone outside, through your outbox",
+		parameters: {
+			type: "object",
+			properties: {
+				recipient: {
+					type: "string",
+					description:
+						"Whom it is for: the name an inbox item came from, to answer it.",
+				},
+				text: { type: "string", description: "What to say, in Markdown." },
+			},
+			required: ["recipient", "text"],
+		} as never,
+		async execute(id, params: { recipient: string; text: string }) {
+			let sending = sendings.get(id);
+			if (!sending) {
+				sending = startSending(id, params.recipient);
+				feed(sending, params.text, true);
+				sending.child.stdin?.end();
+			}
+			const { code, path, error } = await sending.ended;
+			sendings.delete(id);
+			if (code !== 0)
+				throw new Error(`mindio send: ${error || `exit ${code}`}`);
+			return {
+				content: [{ type: "text", text: `Sent to ${params.recipient}.` }],
+				details: { path },
+			};
+		},
 	});
 
 	pi.on("before_agent_start", async () => {
@@ -84,12 +268,26 @@ export default function (pi: ExtensionAPI) {
 	let oneShot = false;
 
 	function wait() {
-		if (stopped || !mindio) return;
-		waiter = spawn("mindio", ["wait"], { stdio: "ignore" });
-		waiter.on("exit", async (code) => {
+		const io = mindio;
+		if (stopped || !io) return;
+		const child = spawn("mindio", ["wait"], {
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		waiter = child;
+		let verdict = "";
+		child.stdout?.on("data", (data) => {
+			verdict += data;
+		});
+		child.on("close", async (code) => {
 			waiter = undefined;
 			if (stopped || code !== 0) return;
-			const marker = join(mindio, "fresh");
+			if (verdict.trim() === "interrupt" && current && !current.isIdle()) {
+				interrupted = true;
+				current.abort();
+				wait();
+				return;
+			}
+			const marker = join(io, "fresh");
 			const fresh = existsSync(marker);
 			rmSync(marker, { force: true });
 			const content = (await take()) || "You were woken, with nothing new.";
