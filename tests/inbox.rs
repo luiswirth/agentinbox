@@ -290,8 +290,8 @@ fn a_wake_stays_until_one_answers_it() {
   agent.wake().unwrap();
   agent.until_woken().unwrap();
   assert!(agent.wake_file().exists());
-  assert!(agent.answer_wake().unwrap());
-  assert!(!agent.answer_wake().unwrap());
+  assert!(agent.answer_wake().unwrap().is_some());
+  assert!(agent.answer_wake().unwrap().is_none());
 }
 
 #[test]

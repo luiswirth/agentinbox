@@ -124,7 +124,7 @@ fn answer(mindio: &MindIo, nudges: &Receiver<()>) -> io::Result<()> {
     // A lock's release changes no file, so the wait for it blocks on the lock itself.
     mindio.until_no_sleeper()?;
     let _turn = mindio.hold_awake()?;
-    if mindio.asleep()? || !mindio.answer_wake()? {
+    if mindio.asleep()? || mindio.answer_wake()?.is_none() {
       continue;
     }
     while let Some(oldest) = inbox.oldest_untaken()? {

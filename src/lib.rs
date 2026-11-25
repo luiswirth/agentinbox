@@ -7,7 +7,8 @@
 //!   its next step.
 //! - `outbox/`, the output (`Outbox`): what the agent says to someone outside, which a subscriber
 //!   carries.
-//! - `wake`, the file that wakes the agent: present from a wake until a mind answers it.
+//! - `wake`, the file that wakes the agent: present from a wake until a mind answers it, and
+//!   `interrupt` beside it where the wake also cuts off the running step (`Verdict`).
 //! - `awake`, locked while a mind is in a turn, and `asleep`, locked while a mind waits and wakes
 //!   itself; with neither held, the agent is offline.
 //! - `resume`, the command that brings the agent's mind back, which the machine's waker runs.
@@ -22,6 +23,12 @@
 //! recipient's in the outbox, encoded one to one: a `/` as `_`, and every other byte but ASCII
 //! letters, digits and `-` as `%XX`, such as `luis_lead` for `luis/lead`.
 //!
+//! An item may stream: it is linked into `new/` as it starts and grows there, while its writer
+//! holds an exclusive `flock` on it (`ItemWriter`). The lock is on the file, not its name, so it
+//! goes along into `cur/`; the item is whole once no writer holds it, also where the writer
+//! crashed, which leaves it as far as it got. An item written without a lock is whole at once.
+//! A reader follows an item until it is whole (`follow`), and never reads one before.
+//!
 //! Other machines' agents are seen through the peers (`peers`).
 //!
 //! What it creates is its owner's alone: its directories 0700, its files 0600.
@@ -29,13 +36,15 @@
 use std::{
   ffi::OsString,
   fs, io,
-  io::{Read, Write},
+  io::{BufRead, BufReader, Read, Write},
   os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
   path::{Path, PathBuf},
   sync::{
-    atomic::{AtomicU64, Ordering},
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
   },
+  thread,
 };
 
 use jiff::{Timestamp, civil::DateTime, tz::TimeZone};
@@ -52,6 +61,27 @@ const TIME_LEN: usize = "20261115T153012.123456Z".len();
 
 /// The waking rules every agent's own come after: every event wakes, and no reading does.
 pub const DEFAULT_WAKING: &str = "kind=event wake\nkind=reading quiet\n";
+
+/// What an item does to the agent, by its waking rules, from the least to the most.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Verdict {
+  /// Waits in the inbox for the agent's next step.
+  Quiet,
+  /// Wakes the agent: an idle one starts a turn, a busy one takes it in at its next step.
+  Wake,
+  /// Wakes the agent and cuts off its running step, keeping the step as far as it got.
+  Interrupt,
+}
+
+impl Verdict {
+  pub fn name(self) -> &'static str {
+    match self {
+      Self::Quiet => "quiet",
+      Self::Wake => "wake",
+      Self::Interrupt => "interrupt",
+    }
+  }
+}
 
 /// What an inbox item is, by how it came: the two kinds of providers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -139,6 +169,9 @@ impl MindIo {
   pub fn wake_file(&self) -> PathBuf {
     self.root.join("wake")
   }
+  pub fn interrupt_file(&self) -> PathBuf {
+    self.root.join("interrupt")
+  }
   pub fn awake_file(&self) -> PathBuf {
     self.root.join("awake")
   }
@@ -160,8 +193,8 @@ impl MindIo {
     create_queue(&self.outbox().root)
   }
 
-  /// Delivers an item into the inbox, from `sender`, and wakes the agent where its waking rules
-  /// say so (`wakes`), matched by `from`, `kind` and the provider's own `fields`.
+  /// Delivers an item into the inbox, from `sender`, as `open` does, at the first byte of
+  /// `content` or at its end where it has none, and streams the rest into it as it comes.
   pub fn deliver(
     &self,
     content: impl Read,
@@ -170,14 +203,26 @@ impl MindIo {
     kind: Kind,
     fields: &[(&str, &str)],
   ) -> io::Result<PathBuf> {
+    stream(content, || self.open(sender, ext, kind, fields))
+  }
+
+  /// Opens an item in the inbox, from `sender`, which streams until the writer is dropped, and
+  /// wakes or interrupts the agent at once where its waking rules say so (`verdict`), matched by
+  /// `from`, `kind` and the provider's own `fields`.
+  pub fn open(
+    &self,
+    sender: &str,
+    ext: &str,
+    kind: Kind,
+    fields: &[(&str, &str)],
+  ) -> io::Result<ItemWriter> {
     self.create()?;
-    let path = self.inbox().deliver(content, sender, ext)?;
     let mut all = vec![("from", sender), ("kind", kind.name())];
     all.extend_from_slice(fields);
-    if self.wakes(&all)? {
-      self.wake()?;
-    }
-    Ok(path)
+    let verdict = self.verdict(&all)?;
+    let writer = self.inbox().open(sender, ext)?;
+    self.rouse(verdict)?;
+    Ok(writer)
   }
 
   /// The command that brings the agent's mind back, as whoever started it wrote it, if any.
@@ -190,20 +235,20 @@ impl MindIo {
     }
   }
 
-  /// Whether an item wakes the agent, by its fields, such as `from=luis kind=event`: the agent
+  /// What an item does to the agent, by its fields, such as `from=luis kind=event`: the agent
   /// decides, by its waking rules, the file `waking`, read after the defaults
-  /// (`DEFAULT_WAKING`). Each line is a rule, fields to match and then `wake` or `quiet`, such as
-  /// `from=lead quiet`, or `quiet` alone for everything; a field matches where the item has it
-  /// with that value, and the last rule that matches decides. `#` starts a comment. A line that
-  /// is no rule is an error, so no rule is lost unseen.
-  pub fn wakes(&self, fields: &[(&str, &str)]) -> io::Result<bool> {
+  /// (`DEFAULT_WAKING`). Each line is a rule, fields to match and then `quiet`, `wake` or
+  /// `interrupt`, such as `from=lead quiet`, or `quiet` alone for everything; a field matches
+  /// where the item has it with that value, and the last rule that matches decides. `#` starts a
+  /// comment. A line that is no rule is an error, so no rule is lost unseen.
+  pub fn verdict(&self, fields: &[(&str, &str)]) -> io::Result<Verdict> {
     let path = self.waking_file();
     let own = match fs::read_to_string(&path) {
       Ok(rules) => rules,
       Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
       Err(e) => return Err(at(e, &path)),
     };
-    let mut wakes = false;
+    let mut decided = Verdict::Quiet;
     for (source, rules) in [
       ("the defaults", DEFAULT_WAKING),
       (&*path.to_string_lossy(), &own),
@@ -221,9 +266,10 @@ impl MindIo {
           )
         };
         let verdict = match verdict {
-          "wake" => true,
-          "quiet" => false,
-          _ => return Err(invalid("a rule ends in `wake` or `quiet`")),
+          "quiet" => Verdict::Quiet,
+          "wake" => Verdict::Wake,
+          "interrupt" => Verdict::Interrupt,
+          _ => return Err(invalid("a rule ends in `quiet`, `wake` or `interrupt`")),
         };
         let mut matches = true;
         for word in words {
@@ -233,30 +279,45 @@ impl MindIo {
           matches &= fields.iter().any(|&(k, v)| k == key && v == value);
         }
         if matches {
-          wakes = verdict;
+          decided = verdict;
         }
       }
     }
-    Ok(wakes)
+    Ok(decided)
+  }
+
+  /// Does what a verdict says: nothing, a wake, or an interrupt.
+  pub fn rouse(&self, verdict: Verdict) -> io::Result<()> {
+    match verdict {
+      Verdict::Quiet => Ok(()),
+      Verdict::Wake => self.wake(),
+      Verdict::Interrupt => self.interrupt(),
+    }
+  }
+
+  /// Wakes the agent and cuts off its running step: `interrupt`, then `wake`, so that whoever
+  /// answers the wake finds the interrupt with it.
+  pub fn interrupt(&self) -> io::Result<()> {
+    self.create()?;
+    touch(&self.interrupt_file())?;
+    self.wake()
   }
 
   /// Wakes the agent: creates `wake`, which stays until a mind answers it.
   pub fn wake(&self) -> io::Result<()> {
     self.create()?;
-    let wake = self.wake_file();
-    fs::OpenOptions::new()
-      .create(true)
-      .append(true)
-      .mode(0o600)
-      .open(&wake)
-      .map_err(|e| at(e, &wake))?;
-    Ok(())
+    touch(&self.wake_file())
   }
 
-  /// Blocks until the agent is woken, then answers the wake by removing `wake`.
-  /// Returns at once where it was woken since the last wait.
-  pub fn wait(&self) -> io::Result<()> {
-    self.until(|io| io.answer_wake())
+  /// Blocks until the agent is woken, then answers the wake (`answer_wake`), and returns whether
+  /// it was a wake or an interrupt. Returns at once where it was woken since the last wait.
+  pub fn wait(&self) -> io::Result<Verdict> {
+    let mut answered = Verdict::Quiet;
+    self.until(|io| {
+      answered = io.answer_wake()?.unwrap_or(Verdict::Quiet);
+      Ok(answered != Verdict::Quiet)
+    })?;
+    Ok(answered)
   }
 
   /// Blocks until the agent is woken, leaving `wake` in place for whoever answers it.
@@ -264,15 +325,17 @@ impl MindIo {
     self.until(|io| Ok(io.wake_file().exists()))
   }
 
-  /// Answers a wake by removing `wake`: whether there was one, so that of concurrent answerers
-  /// exactly one does.
-  pub fn answer_wake(&self) -> io::Result<bool> {
-    let wake = self.wake_file();
-    match fs::remove_file(&wake) {
-      Ok(()) => Ok(true),
-      Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-      Err(e) => Err(at(e, &wake)),
+  /// Answers a wake by removing `wake`, and `interrupt` with it: the wake or the interrupt there
+  /// was, if any, so that of concurrent answerers exactly one does.
+  pub fn answer_wake(&self) -> io::Result<Option<Verdict>> {
+    if !remove(&self.wake_file())? {
+      return Ok(None);
     }
+    Ok(Some(if remove(&self.interrupt_file())? {
+      Verdict::Interrupt
+    } else {
+      Verdict::Wake
+    }))
   }
 
   /// Takes the exclusive lock on `awake`, waiting while another holds it:
@@ -324,7 +387,7 @@ impl MindIo {
   }
 
   /// Blocks until `done` holds, testing it at once and at every change in the directory itself.
-  fn until(&self, done: impl Fn(&Self) -> io::Result<bool>) -> io::Result<()> {
+  fn until(&self, mut done: impl FnMut(&Self) -> io::Result<bool>) -> io::Result<()> {
     self.create()?;
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(tx).map_err(io::Error::other)?;
@@ -354,15 +417,20 @@ impl Inbox {
     self.root.join("tmp")
   }
 
-  /// Writes the item into `tmp/`, then links it into `new/` under a name no other item has,
-  /// so that `new/` only ever holds complete items and no delivery overwrites another. It wakes
-  /// no one: `MindIo::deliver` also wakes.
+  /// Delivers an item, as `open` does, at the first byte of `content` or at its end where it has
+  /// none, and streams the rest into it as it comes. It wakes no one: `MindIo::deliver` also wakes.
   pub fn deliver(&self, content: impl Read, sender: &str, ext: &str) -> io::Result<PathBuf> {
-    create_queue(&self.root)?;
-    write_item(&self.root, content, sender, ext)
+    stream(content, || self.open(sender, ext))
   }
 
-  /// Moves every item in `new/` to `cur/`, in order, and returns them.
+  /// Opens an item from `sender`, linked into `new/` at once, which streams until the writer is
+  /// dropped. It wakes no one: `MindIo::open` also wakes.
+  pub fn open(&self, sender: &str, ext: &str) -> io::Result<ItemWriter> {
+    create_queue(&self.root)?;
+    open_item(&self.root, sender, ext)
+  }
+
+  /// Moves every item in `new/` to `cur/`, in order, and returns them, each once it is whole.
   /// The move comes first, so that of several concurrent takers exactly one gets each item.
   pub fn take(&self) -> io::Result<Vec<Item>> {
     create_queue(&self.root)?;
@@ -411,9 +479,15 @@ impl Outbox {
     self.root.join("cur")
   }
 
-  /// Writes an item for `recipient`, such as `telegram:luis`, as `Inbox::deliver` writes one.
-  /// Answering an inbox item is writing an item for the name it came from.
+  /// Writes an item for `recipient`, such as `telegram:luis`, as `Inbox::deliver` writes one:
+  /// it streams as `content` comes. Answering an inbox item is writing an item for the name it
+  /// came from.
   pub fn send(&self, content: impl Read, recipient: &str, ext: &str) -> io::Result<PathBuf> {
+    stream(content, || self.open(recipient, ext))
+  }
+
+  /// Opens an item for `recipient`, as `Inbox::open` does.
+  pub fn open(&self, recipient: &str, ext: &str) -> io::Result<ItemWriter> {
     if recipient.is_empty() {
       return Err(io::Error::new(
         io::ErrorKind::InvalidInput,
@@ -421,13 +495,13 @@ impl Outbox {
       ));
     }
     create_queue(&self.root)?;
-    write_item(&self.root, content, recipient, ext)
+    open_item(&self.root, recipient, ext)
   }
 
   /// Takes every item in `new/` whose recipient `serves` accepts, oldest first, by moving it into
   /// `cur/` first, so that of several subscribers exactly one carries each; an item none serves
   /// stays in `new/`. Only a regular file is an item: a link is never followed to what it points
-  /// at.
+  /// at. An item taken may still stream: read it with `follow`.
   pub fn take(&self, serves: impl Fn(&str) -> bool) -> io::Result<Vec<Outgoing>> {
     create_queue(&self.root)?;
     let new = self.new_dir();
@@ -501,10 +575,10 @@ fn create_queue(root: &Path) -> io::Result<()> {
   Ok(())
 }
 
-/// Writes an item into the inbox or outbox at `root`: into `tmp/`, then linked into `new/` under
-/// a name no other item has, so that `new/` only ever holds complete items and none overwrites
-/// another.
-fn write_item(root: &Path, mut content: impl Read, who: &str, ext: &str) -> io::Result<PathBuf> {
+/// Opens an item in the inbox or outbox at `root`: made in `tmp/`, locked, then linked into
+/// `new/` under a name no other item has, so that none overwrites another and `new/` never holds
+/// an item that looks whole before it is.
+fn open_item(root: &Path, who: &str, ext: &str) -> io::Result<ItemWriter> {
   let sender = encode(who);
   let ext = ext.trim_start_matches('.');
   let valid = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+');
@@ -525,15 +599,13 @@ fn write_item(root: &Path, mut content: impl Read, who: &str, ext: &str) -> io::
     "{}.{unique}.{sender}.{ext}",
     format_time(Timestamp::now())
   ));
-  let mut file = fs::OpenOptions::new()
+  let file = fs::OpenOptions::new()
     .write(true)
     .create_new(true)
     .mode(0o600)
     .open(&tmp)
     .map_err(|e| at(e, &tmp))?;
-  io::copy(&mut content, &mut file).map_err(|e| at(e, &tmp))?;
-  file.sync_all().map_err(|e| at(e, &tmp))?;
-  drop(file);
+  file.lock().map_err(|e| at(e, &tmp))?;
 
   let mut last = String::new();
   loop {
@@ -545,11 +617,151 @@ fn write_item(root: &Path, mut content: impl Read, who: &str, ext: &str) -> io::
     match fs::hard_link(&tmp, &path) {
       Ok(()) => {
         fs::remove_file(&tmp).map_err(|e| at(e, &tmp))?;
-        return Ok(path);
+        return Ok(ItemWriter { path, file });
       }
       Err(e) if e.kind() == io::ErrorKind::AlreadyExists => last = time,
       Err(e) => return Err(at(e, &path)),
     }
+  }
+}
+
+/// Streams `content` into the item `open` opens, at the first byte of `content` or at its end
+/// where it has none, and returns where the item was linked.
+pub fn stream(
+  content: impl Read,
+  open: impl FnOnce() -> io::Result<ItemWriter>,
+) -> io::Result<PathBuf> {
+  let mut content = BufReader::new(content);
+  content.fill_buf()?;
+  let mut writer = open()?;
+  io::copy(&mut content, &mut writer)?;
+  writer.finish()
+}
+
+/// An item as it streams: linked already, and locked while this lives. Dropping it ends the item
+/// where it got to; `finish` also makes it durable.
+pub struct ItemWriter {
+  /// Where it was linked, in `new/`; a taker may have moved it since.
+  pub path: PathBuf,
+  file: fs::File,
+}
+
+impl ItemWriter {
+  /// Ends the item, whole and on disk, and returns where it was linked.
+  pub fn finish(self) -> io::Result<PathBuf> {
+    self.file.sync_all().map_err(|e| at(e, &self.path))?;
+    Ok(self.path)
+  }
+}
+
+impl Write for ItemWriter {
+  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    self.file.write(buf)
+  }
+  fn flush(&mut self) -> io::Result<()> {
+    self.file.flush()
+  }
+}
+
+/// Whether an item is whole: whether no writer holds it.
+pub fn whole(path: &Path) -> io::Result<bool> {
+  let file = fs::File::open(path).map_err(|e| at(e, path))?;
+  match file.try_lock_shared() {
+    Ok(()) => Ok(true),
+    Err(fs::TryLockError::WouldBlock) => Ok(false),
+    Err(fs::TryLockError::Error(e)) => Err(at(e, path)),
+  }
+}
+
+/// Follows an item where it lies: reads what it holds, and blocks at its end until more is written
+/// or it is whole, so that the end of reading is the end of the item. It waits by filesystem
+/// notifications and by the lock, never by polling. Follow an item after moving it, as a taker
+/// does, so that it stays where it is followed.
+pub fn follow(path: &Path) -> io::Result<Follow> {
+  let file = fs::File::open(path).map_err(|e| at(e, path))?;
+  let done = Arc::new(AtomicBool::new(false));
+  let lock = fs::File::open(path).map_err(|e| at(e, path))?;
+  match lock.try_lock_shared() {
+    Ok(()) => {
+      done.store(true, Ordering::Release);
+      return Ok(Follow {
+        file,
+        done,
+        changes: None,
+      });
+    }
+    Err(fs::TryLockError::WouldBlock) => {}
+    Err(fs::TryLockError::Error(e)) => return Err(at(e, path)),
+  }
+  let (tx, rx) = mpsc::channel();
+  let mut watcher = notify::recommended_watcher({
+    let tx = tx.clone();
+    move |_| {
+      let _ = tx.send(());
+    }
+  })
+  .map_err(io::Error::other)?;
+  watcher
+    .watch(path, RecursiveMode::NonRecursive)
+    .map_err(io::Error::other)?;
+  // The writer's release changes no data, so the end is waited for on the lock itself. Where the
+  // follower is dropped first, the thread ends with the writer.
+  thread::spawn({
+    let done = done.clone();
+    move || {
+      let _ = lock.lock_shared();
+      done.store(true, Ordering::Release);
+      let _ = tx.send(());
+    }
+  });
+  Ok(Follow {
+    file,
+    done,
+    changes: Some((watcher, rx)),
+  })
+}
+
+/// An item followed until it is whole (`follow`).
+pub struct Follow {
+  file: fs::File,
+  done: Arc<AtomicBool>,
+  changes: Option<(notify::RecommendedWatcher, mpsc::Receiver<()>)>,
+}
+
+impl Read for Follow {
+  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    loop {
+      // Tested before the read: the writer wrote everything before it let go.
+      let done = self.done.load(Ordering::Acquire);
+      let n = self.file.read(buf)?;
+      if n > 0 || done || buf.is_empty() {
+        return Ok(n);
+      }
+      let Some((_, changes)) = &self.changes else {
+        return Ok(0);
+      };
+      changes.recv().map_err(io::Error::other)?;
+    }
+  }
+}
+
+/// Creates a file where it is missing, its owner's alone.
+fn touch(path: &Path) -> io::Result<()> {
+  fs::OpenOptions::new()
+    .create(true)
+    .append(true)
+    .mode(0o600)
+    .open(path)
+    .map_err(|e| at(e, path))?;
+  Ok(())
+}
+
+/// Removes a file: whether it was there.
+fn remove(path: &Path) -> io::Result<bool> {
+  match fs::remove_file(path) {
+    Ok(()) => Ok(true),
+    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+    Err(e) => Err(at(e, path)),
   }
 }
 
@@ -578,7 +790,10 @@ fn read_item(path: PathBuf) -> io::Result<Item> {
       (Timestamp::try_from(modified).unwrap_or_default(), None)
     }
   };
-  let bytes = fs::read(&path).map_err(|e| at(e, &path))?;
+  let mut bytes = Vec::new();
+  follow(&path)?
+    .read_to_end(&mut bytes)
+    .map_err(|e| at(e, &path))?;
   let content = match String::from_utf8(bytes) {
     Ok(text) => Content::Text(text),
     Err(_) => {
@@ -756,24 +971,23 @@ mod tests {
     mindio.create().unwrap();
     let hive = [("from", "luis"), ("kind", "event"), ("session", "hive")];
     let clock = [("from", "clock"), ("kind", "reading")];
-    assert!(mindio.wakes(&hive).unwrap());
-    assert!(!mindio.wakes(&clock).unwrap());
+    let wakes = |fields: &[(&str, &str)]| mindio.verdict(fields).map(|v| v == Verdict::Wake);
+    assert!(wakes(&hive).unwrap());
+    assert!(!wakes(&clock).unwrap());
     fs::write(
       mindio.waking_file(),
       "# listen in the hive\nsession=hive quiet\n\nfrom=clock wake # loud\n",
     )
     .unwrap();
-    assert!(!mindio.wakes(&hive).unwrap());
-    assert!(mindio.wakes(&clock).unwrap());
+    assert!(!wakes(&hive).unwrap());
+    assert!(wakes(&clock).unwrap());
     fs::write(mindio.waking_file(), "quiet\nfrom=luis wake\n").unwrap();
-    assert!(mindio.wakes(&hive).unwrap());
-    assert!(
-      !mindio
-        .wakes(&[("from", "lead"), ("kind", "event")])
-        .unwrap()
-    );
+    assert!(wakes(&hive).unwrap());
+    assert!(!wakes(&[("from", "lead"), ("kind", "event")]).unwrap());
+    fs::write(mindio.waking_file(), "from=luis interrupt\n").unwrap();
+    assert_eq!(mindio.verdict(&hive).unwrap(), Verdict::Interrupt);
     fs::write(mindio.waking_file(), "session=hive loud\n").unwrap();
-    assert!(mindio.wakes(&hive).is_err());
+    assert!(mindio.verdict(&hive).is_err());
     fs::remove_dir_all(&dir).unwrap();
   }
 }

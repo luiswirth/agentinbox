@@ -21,8 +21,10 @@ use clap::{Parser, Subcommand};
 /// it in at its next step. Its output is `outbox/`, what the agent says to someone outside, which
 /// a subscriber carries. Each holds `new/`, the items not yet taken, `cur/`, the taken ones, and
 /// `tmp/`, the ones being written; an item is one file, `<time>.<name>.<ext>`, with the time in
-/// UTC. A wake, the file `wake`, starts a turn of an idle agent; what wakes it, the agent decides
-/// itself, by its waking rules (see `deliver`).
+/// UTC. An item may stream: it is in `new/` from its start and grows there while its writer holds
+/// an exclusive `flock` on it, and is whole once none does (see `follow`). A wake, the file
+/// `wake`, starts a turn of an idle agent, and an interrupt, `interrupt` beside it, also cuts off a
+/// busy one's step; what wakes it, the agent decides itself, by its waking rules (see `deliver`).
 ///
 /// A mind in a turn holds a lock on `awake`, and a mind that waits and wakes itself one on
 /// `asleep`; with neither held the agent is offline, and the machine's waker answers its wake by
@@ -43,11 +45,12 @@ enum Command {
   /// Delivers one item, read from stdin, into the inbox, and wakes the agent where its waking
   /// rules say so.
   ///
-  /// The agent decides what wakes it, by the file `waking`: each line is a rule, fields to match
-  /// and then `wake` or `quiet`, such as `from=lead quiet`, or `quiet` alone for everything. An
-  /// item's fields are `from`, `kind` and the `--field`s its provider gives. The rules come after
-  /// the defaults, `kind=event wake` and `kind=reading quiet`, and the last rule that matches
-  /// decides.
+  /// The item streams: it is delivered at the first byte, and grows as stdin comes until it ends.
+  /// The agent decides what wakes it, at that first byte, by the file `waking`: each line is a
+  /// rule, fields to match and then `quiet`, `wake` or `interrupt`, such as `from=lead quiet`, or
+  /// `quiet` alone for everything; an interrupt also cuts off the step the agent is in. An item's
+  /// fields are `from`, `kind` and the `--field`s its provider gives. The rules come after the
+  /// defaults, `kind=event wake` and `kind=reading quiet`, and the last rule that matches decides.
   Deliver {
     /// Who sends it, such as an agent's or a person's name.
     #[arg(long, default_value = "unknown")]
@@ -65,9 +68,14 @@ enum Command {
     fields: Vec<(String, String)>,
   },
   /// Wakes the agent, delivering nothing.
-  Wake,
+  Wake {
+    /// Also cuts off the step the agent is in.
+    #[arg(long)]
+    interrupt: bool,
+  },
   /// Takes the readings, then prints every new inbox item, oldest first, and moves it to `cur/`.
   ///
+  /// An item that still streams is printed once it is whole.
   /// A reading is a command that delivers a state as the agent looks, such as the time; the
   /// readings are the lines of `mindio/readings` in the user's config directory, each run with
   /// `sh -c` and `MINDIO`, and one that fails is reported on stderr and passed over. Prints
@@ -75,11 +83,19 @@ enum Command {
   /// model: each item as `<inbox-item from=".." time="..">` with its text, or, where it is no
   /// text, its path and type.
   Take,
-  /// Blocks until the agent is woken, then answers the wake.
+  /// Blocks until the agent is woken, then answers the wake, and prints `wake`, or `interrupt`
+  /// where the agent's step is to be cut off.
   ///
   /// It returns at once where the agent was woken while no one waited. Run it as a background
   /// command, or from a watcher that starts the agent. It takes nothing in: run `take` after it.
   Wait,
+  /// Prints an item as it streams, and ends once it is whole.
+  ///
+  /// Follow an item after taking it, in `cur/`, so that it stays where it is followed.
+  Follow {
+    /// The item.
+    path: PathBuf,
+  },
   /// Holds the asleep lock until stdin closes, or until the process `--pid` ends: a mind of the
   /// agent waits meanwhile and will wake itself, so the waker leaves its wakes to it.
   ///
@@ -148,8 +164,10 @@ enum Command {
   },
   /// Prints what an agent needs to know of its IO, for its harness to give it as a session starts.
   Brief,
-  /// Writes one item, read from stdin, into the outbox, for a recipient, such as `telegram:luis`.
+  /// Writes one item, read from stdin, into the outbox, for a recipient, such as `telegram:luis`,
+  /// and prints its path as it starts.
   ///
+  /// The item streams: it is in `new/` from the first byte, and grows as stdin comes until it ends.
   /// A subscriber, such as messagent for `telegram:`, carries the items for the recipients it
   /// serves; an item none serves stays in `new/`. Answering an inbox item is writing an item for
   /// the name it came from.
@@ -231,6 +249,7 @@ fn run(cli: Cli) -> io::Result<()> {
       porcelain,
     } => return agents(dir, *here, *porcelain),
     Command::Until { time } => return until(time_from(time)?),
+    Command::Follow { path } => return follow(path),
     _ => {}
   }
   let mindio = MindIo::new(cli.mindio.ok_or_else(|| {
@@ -257,7 +276,8 @@ fn run(cli: Cli) -> io::Result<()> {
         .collect();
       mindio.deliver(io::stdin().lock(), &from, &ext(&ty)?, kind, &fields)?;
     }
-    Command::Wake => mindio.wake()?,
+    Command::Wake { interrupt: false } => mindio.wake()?,
+    Command::Wake { interrupt: true } => mindio.interrupt()?,
     Command::Brief => print!("{}", brief(&mindio)),
     Command::Take => {
       readings(&mindio)?;
@@ -269,7 +289,7 @@ fn run(cli: Cli) -> io::Result<()> {
         item.render(&mut out)?;
       }
     }
-    Command::Wait => mindio.wait()?,
+    Command::Wait => println!("{}", mindio.wait()?.name()),
     Command::Awake => {
       let _lock = mindio.hold_awake()?;
       io::copy(&mut io::stdin().lock(), &mut io::sink())?;
@@ -294,12 +314,20 @@ fn run(cli: Cli) -> io::Result<()> {
       }
     }
     Command::Send { recipient, ty } => {
-      let path = mindio
-        .outbox()
-        .send(io::stdin().lock(), &recipient, &ext(&ty)?)?;
-      println!("{}", path.display());
+      let ext = ext(&ty)?;
+      let outbox = mindio.outbox();
+      mindio::stream(io::stdin().lock(), || {
+        let writer = outbox.open(&recipient, &ext)?;
+        let mut out = io::stdout().lock();
+        writeln!(out, "{}", writer.path.display())?;
+        out.flush()?;
+        Ok(writer)
+      })?;
     }
-    Command::Waker { .. } | Command::Until { .. } | Command::Agents { .. } => {
+    Command::Waker { .. }
+    | Command::Until { .. }
+    | Command::Agents { .. }
+    | Command::Follow { .. } => {
       unreachable!("handled above")
     }
   }
@@ -315,8 +343,8 @@ fn brief(mindio: &MindIo) -> String {
      `mindio send <recipient>` answers an item by the name it came from; and it wakes you.\n\
      \n\
      What wakes you is yours to decide, in {root}/waking: one rule per line, fields to match and \
-     then `wake` or `quiet`, such as `from=messagent quiet`, the last rule that matches deciding. \
-     They come after the defaults, `kind=event wake` and `kind=reading quiet`: every event \
+     then `quiet`, `wake` or `interrupt`, such as `from=messagent quiet`, the last rule that \
+     matches deciding; an interrupt also cuts off what you are doing. They come after the defaults, `kind=event wake` and `kind=reading quiet`: every event \
      wakes you, and no reading, such as the time. An item's fields are `from`, `kind` and the \
      ones its provider documents. Never being woken, or too rarely, is the worst case, so quiet \
      only what you know you don't need; a needless wake costs little, since you can end that \
@@ -324,6 +352,21 @@ fn brief(mindio: &MindIo) -> String {
      \n\
      `mindio --help` tells the rest, such as alarms and your status.\n"
   )
+}
+
+/// Prints an item as it streams, each piece as it comes.
+fn follow(path: &Path) -> io::Result<()> {
+  let mut item = mindio::follow(path)?;
+  let mut out = io::stdout().lock();
+  let mut buf = [0; 8192];
+  loop {
+    let n = io::Read::read(&mut item, &mut buf)?;
+    if n == 0 {
+      return Ok(());
+    }
+    out.write_all(&buf[..n])?;
+    out.flush()?;
+  }
 }
 
 /// A field as `--field` takes it, `<name>=<value>`.
