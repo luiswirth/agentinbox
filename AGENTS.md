@@ -39,7 +39,7 @@ The inbox and the outbox are one pair, the same shape mirrored: `new/` (not yet 
 - A reader never reads an item before it is whole: it follows it (`mindio follow`), with filesystem notifications for what is written and the lock for the end, never polling. `take` gives each item once whole.
 - Taking moves to `cur/` first, so of concurrent takers exactly one gets each.
 - Answering an inbox item is writing an outbox item for the name it came from, such as `telegram:luis`.
-- A channel outside Vibe Together names its people as `<channel>:<name>`, which no Vibe Together name can be, so no participant passes for one of them.
+- A channel names its people as `<channel>:<name>`, such as `telegram:luis`, so no name passes for another channel's.
 - A subscriber serves a prefix of recipients, such as messagent `telegram:`, watches `outbox/new/` with filesystem notifications, and takes each item it serves; an item none serves stays.
   Only a regular file is an item: a subscriber follows no link.
   What it can't carry it tells the agent as an inbox item from its own name.
@@ -78,8 +78,8 @@ Luis: "we need to make the inbox really clean in the sense that we can easily ad
 - A perception reports a change, not a clock, and states information, never policy.
 - Providers are of two kinds, the item's `kind`:
   - An event happens, and its provider writes into the inbox as it happens, so adding one is starting it.
-    Such as Vibe Together's `vibetogether inbox receive` (`~/dev/vibetogether`), messagent's Telegram chats (`~/dev/agentics/messagent`), or a daemon's impulse.
-    A provider that serves every agent runs once per machine over all of them, as the waker does, and each agent names itself there in a file of the provider's, such as `vibetogether`.
+    Such as messagent's Telegram chats (`~/dev/agentics/messagent`), or a daemon's impulse.
+    A provider that serves every agent runs once per machine over all of them, as the waker does, and each agent names itself there in a file of the provider's.
   - A reading is a state the agent sees as it looks, which can't be pushed, since a sleeping agent would wake to a pile of them.
     It is a command that `take` runs first, at each step, with `MINDIO_KIND=reading`, so what it delivers is taken in the same step; the readings are the lines of `mindio/readings` in the user's config directory, and one that fails is reported and passed over.
     A reading delivers only as it crosses a mark, and keeps the mark it told last in a file of the agent's IO named after it.
@@ -118,5 +118,5 @@ At a session's start, the wiring makes the agent's IO, `MINDIO` where it was sta
 - An item's fields are matched at delivery and not kept, so an agent learns a provider's fields only from the provider's documentation.
 - Sight: how an image reaches a model is the harness's.
 - Others' last tool calls, working directories and Rex sessions: the harness's or the setup's, never MindIO's.
-- MindIO's HTTP face, for a client with no folder on the agent's machine, such as Vibe Together carrying out what an outbox addresses to a session (PotentialHedge/vibetogether#36).
+- MindIO's HTTP face, for a client with no folder on the agent's machine.
 - The outbox: replying to one item in particular, a thread; how an agent learns which recipients a subscriber serves.
