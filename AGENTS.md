@@ -10,6 +10,7 @@ It is for thinking about minds at the low level, in the style of Cogicorpus, wit
 Modalities build on it, each doing all three for its own, such as VoiceIO (`~/dev/agentics/voiceio`).
 
 Written MindIO in prose; the repository, crate and command are `mindio`, whose `--help` documents the command line and whose doc comments the library.
+Every crate that depends on it in its `Cargo.toml`, such as the senses, links it itself, so a change to its interface or to the waking rules' syntax moves them along.
 
 ## The agent's IO
 
